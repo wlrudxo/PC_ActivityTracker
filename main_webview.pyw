@@ -269,6 +269,7 @@ class ActivityTrackerApp:
         self.rule_engine = None
         self.log_generator = None
         self.running = True
+        self._webview_loaded = threading.Event()
 
         # 포트 설정
         self.api_port = 8000
@@ -568,15 +569,29 @@ class ActivityTrackerApp:
     def run(self):
         """앱 실행"""
         print("[App] Starting Activity Tracker (PyWebView Edition)")
+        start_ts = time.perf_counter()
+
+        def _log_step(label: str, step_start: float, step_end: float = None):
+            end_ts = step_end if step_end is not None else time.perf_counter()
+            elapsed = end_ts - step_start
+            total_elapsed = end_ts - start_ts
+            msg = f"[Startup] {label} took {elapsed:.3f}s (total {total_elapsed:.3f}s)"
+            print(msg)
+            logging.info(msg)
 
         # Reduce noisy pywebview native introspection logs.
         logging.getLogger("pywebview").setLevel(logging.ERROR)
         logging.getLogger("webview").setLevel(logging.ERROR)
 
         # API 서버 시작
+        step_ts = time.perf_counter()
         self.start_api_server()
         time.sleep(1)  # 서버 시작 대기
+        _log_step("API server start + initial sleep", step_ts)
+
+        step_ts = time.perf_counter()
         if not self._wait_for_api_ready(timeout=12.0):
+            _log_step("API health check (failed)", step_ts)
             logging.error("[API Server] Health check failed")
             if self.api_server_thread and self.api_server_thread.is_alive():
                 self.api_server_thread.stop()
@@ -588,21 +603,31 @@ class ActivityTrackerApp:
                 0x10 | 0x1000
             )
             return
+        _log_step("API health check (ok)", step_ts)
 
         # 종료 콜백 설정
+        step_ts = time.perf_counter()
         set_exit_callback(self.quit_app)
+        _log_step("Exit callback set", step_ts)
 
         # 모니터링 엔진 시작
+        step_ts = time.perf_counter()
         self.start_monitor_engine()
+        _log_step("Monitor engine start", step_ts)
 
         # 트레이 아이콘 시작 (별도 스레드)
+        step_ts = time.perf_counter()
         tray_thread = threading.Thread(target=self.run_tray, daemon=True)
         tray_thread.start()
+        _log_step("Tray thread start", step_ts)
 
         # JS API 인스턴스 생성
+        step_ts = time.perf_counter()
         self.js_api = PyWebViewApi(self)
+        _log_step("JS API init", step_ts)
 
         # PyWebView 창 생성
+        step_ts = time.perf_counter()
         self.window = webview.create_window(
             title="Activity Tracker",
             url=self.webui_url,
@@ -613,12 +638,53 @@ class ActivityTrackerApp:
             confirm_close=True,
             js_api=self.js_api
         )
+        _log_step("WebView window created", step_ts)
 
         # 창 닫기 이벤트
         self.window.events.closing += self.on_closing
+        # WebView 이벤트 로그
+        def _log_webview_event(name: str):
+            msg = f"[WebView] event: {name}"
+            print(msg)
+            logging.info(msg)
+
+        if getattr(self.window, "events", None):
+            if getattr(self.window.events, "shown", None):
+                self.window.events.shown += lambda: _log_webview_event("shown")
+            if getattr(self.window.events, "loaded", None):
+                def _on_loaded():
+                    self._webview_loaded.set()
+                    _log_webview_event("loaded")
+                self.window.events.loaded += _on_loaded
+            if getattr(self.window.events, "closed", None):
+                self.window.events.closed += lambda: _log_webview_event("closed")
+            if getattr(self.window.events, "minimized", None):
+                self.window.events.minimized += lambda: _log_webview_event("minimized")
+            if getattr(self.window.events, "restored", None):
+                self.window.events.restored += lambda: _log_webview_event("restored")
+
+        def _webview_watchdog():
+            checkpoints = [2, 5, 10, 15, 20]
+            last = 0.0
+            for checkpoint in checkpoints:
+                if self._webview_loaded.wait(timeout=checkpoint - last):
+                    return
+                last = checkpoint
+                try:
+                    current_url = self.window.get_current_url()
+                except Exception as e:
+                    current_url = f"unavailable ({e})"
+                msg = f"[WebView] still loading after {checkpoint}s (url={current_url})"
+                print(msg)
+                logging.info(msg)
+
+        threading.Thread(target=_webview_watchdog, daemon=True).start()
 
         # WebView 시작 (메인 스레드에서 실행)
         # EdgeChromium 백엔드 사용 (Windows 10/11 기본 탑재)
+        step_ts = time.perf_counter()
+        print("[Startup] Entering webview.start (UI loop)")
+        logging.info("[Startup] Entering webview.start (UI loop)")
         webview.start(
             debug=(
                 os.environ.get('DEV_MODE') == '1'
@@ -627,6 +693,7 @@ class ActivityTrackerApp:
             gui='edgechromium',
             storage_path=str(self._webview_profile_dir)
         )
+        _log_step("webview.start returned", step_ts)
 
 
 def is_port_in_use(port: int) -> bool:

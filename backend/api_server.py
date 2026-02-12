@@ -619,6 +619,7 @@ async def reclassify_untagged():
         activity_info = {
             'process_name': activity.get('process_name'),
             'window_title': activity.get('window_title'),
+            'process_path': activity.get('process_path'),
             'chrome_url': activity.get('chrome_url'),
             'chrome_profile': activity.get('chrome_profile')
         }
@@ -655,6 +656,7 @@ async def reclassify_all():
         activity_info = {
             'process_name': activity.get('process_name'),
             'window_title': activity.get('window_title'),
+            'process_path': activity.get('process_path'),
             'chrome_url': activity.get('chrome_url'),
             'chrome_profile': activity.get('chrome_profile')
         }

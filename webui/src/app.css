@@ -1,5 +1,6 @@
 @import "tailwindcss";
 
+/* 폰트 로딩 비활성화 - 6.5MB TTF가 앱 시작 시 블로킹 유발
 @font-face {
   font-family: 'Pretendard';
   src: url('./assets/fonts/pretendard/PretendardVariable.ttf') format('truetype');
@@ -7,6 +8,7 @@
   font-style: normal;
   font-display: swap;
 }
+*/
 
 /* Theme variables - Tailwind v4 compatible */
 @theme {
@@ -64,7 +66,7 @@ html.dark {
 
 body {
   margin: 0;
-  font-family: 'Pretendard', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Inter', Roboto, Oxygen, Ubuntu, sans-serif;
   background-color: var(--color-bg-primary);
   color: var(--color-text-primary);
   -webkit-font-smoothing: antialiased;

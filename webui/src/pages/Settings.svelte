@@ -15,7 +15,7 @@
   // General settings
   let settings = {
     polling_interval: '2',
-    idle_threshold: '300',
+    idle_threshold: '5',  // 분 단위 (DB는 초 단위)
     log_retention_days: '30',
     target_daily_hours: '7',
     target_distraction_ratio: '20'
@@ -78,9 +78,11 @@
         api.getAutoStart()
       ]);
 
+      // idle_threshold: DB는 초 단위, UI는 분 단위
+      const idleThresholdSec = parseInt(settingsRes.settings?.idle_threshold || '300');
       settings = {
         polling_interval: settingsRes.settings?.polling_interval || '2',
-        idle_threshold: settingsRes.settings?.idle_threshold || '300',
+        idle_threshold: String(Math.round(idleThresholdSec / 60)),  // 초 → 분
         log_retention_days: settingsRes.settings?.log_retention_days || '30',
         target_daily_hours: settingsRes.settings?.target_daily_hours || '7',
         target_distraction_ratio: settingsRes.settings?.target_distraction_ratio || '20'
@@ -98,7 +100,12 @@
   async function saveSettings() {
     saving = true;
     try {
-      await api.updateSettings({ settings });
+      // idle_threshold: UI는 분 단위, DB는 초 단위로 저장
+      const settingsToSave = {
+        ...settings,
+        idle_threshold: String(parseInt(settings.idle_threshold) * 60)  // 분 → 초
+      };
+      await api.updateSettings({ settings: settingsToSave });
       toast.success('설정이 저장되었습니다.');
     } catch (err) {
       toast.error('저장 실패: ' + err.message);
@@ -453,14 +460,14 @@
 
         <div>
           <label for="idle" class="block text-sm font-medium text-text-secondary mb-2">
-            자리비움 감지 (초)
+            자리비움 감지 (분)
           </label>
           <input
             id="idle"
             type="number"
             bind:value={settings.idle_threshold}
-            min="60"
-            max="600"
+            min="1"
+            max="30"
             class="w-full px-3 py-2 bg-bg-tertiary border border-border rounded-lg text-text-primary focus:border-accent focus:ring-1 focus:ring-accent outline-none"
           />
         </div>
@@ -618,7 +625,7 @@
 
     <div class="flex items-center justify-between gap-4">
       <div class="flex items-center gap-4">
-        <div class="w-12 h-12 rounded-xl bg-accent flex items-center justify-center">
+        <div class="w-12 h-12 rounded-xl bg-white flex items-center justify-center">
           {#if appIconSrc && !iconLoadFailed}
             <img
               class="w-7 h-7 object-contain"

@@ -221,6 +221,7 @@ class ImportExportManager:
             for tag in tags_data:
                 tag_name = tag['name']
                 tag_color = tag['color']
+                tag_category = tag.get('category', 'other')
 
                 # 같은 이름의 태그가 있는지 확인
                 existing_tag = self.db_manager.get_tag_by_name(tag_name)
@@ -231,7 +232,7 @@ class ImportExportManager:
                     stats['tags_existed'] += 1
                 else:
                     # 새 태그 생성
-                    new_tag_id = self.db_manager.create_tag(tag_name, tag_color)
+                    new_tag_id = self.db_manager.create_tag(tag_name, tag_color, tag_category)
                     tag_id_mapping[tag['id']] = new_tag_id
                     stats['tags_imported'] += 1
 

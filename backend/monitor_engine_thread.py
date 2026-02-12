@@ -308,6 +308,7 @@ class MonitorEngineThread(threading.Thread):
             self.current_activity_id = self.db_manager.create_activity(
                 process_name=info['process_name'],
                 window_title=info['window_title'],
+                process_path=info.get('process_path'),
                 chrome_url=info['chrome_url'],
                 chrome_profile=info['chrome_profile'],
                 tag_id=tag_id,

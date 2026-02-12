@@ -1,0 +1,59 @@
+{
+  "version": "1.0",
+  "description": "Activity Tracker 기본 분류규칙 - 첫 실행 시 자동 적용",
+  "tags": [
+    {"id": 1, "name": "업무", "color": "#4CAF50", "category": "work"},
+    {"id": 2, "name": "휴식", "color": "#EF5350", "category": "non_work"},
+    {"id": 3, "name": "기타", "color": "#78909C", "category": "other"}
+  ],
+  "rules": [
+    {
+      "id": 1,
+      "name": "업무 분류규칙",
+      "priority": 99,
+      "enabled": true,
+      "process_pattern": "*Matlab*,*windowsterminal*,*powerpnt*,*HIL*,*Acrobat*,*obs*,*Moive*,*Slack*,*python*,*code*,*antigravity*,*powershell*,*pwsh*,*hwp*,*Teams*,*Zoom*,*Webex*,*Discord*,*excel*,*winword*,*Notion*,*Obsidian*,*Figma*,*Adobe*",
+      "url_pattern": "*gemini*,*chatgpt*,*perplexity*",
+      "window_title_pattern": null,
+      "chrome_profile": null,
+      "process_path_pattern": null,
+      "tag_id": 1
+    },
+    {
+      "id": 2,
+      "name": "휴식 분류규칙",
+      "priority": 99,
+      "enabled": true,
+      "process_pattern": "*kakaotalk*,*ActivityTracker*",
+      "url_pattern": null,
+      "window_title_pattern": null,
+      "chrome_profile": null,
+      "process_path_pattern": null,
+      "tag_id": 2
+    },
+    {
+      "id": 3,
+      "name": "기타 분류규칙",
+      "priority": 10,
+      "enabled": true,
+      "process_pattern": "*bandizip*,*msedgewebview*,*autohotkey*,*OpenWith*,*logioption*,*potplayer*,*updater*,*hncupdate*,*msrdc*,*credentialUI*,*pickerhost*,*unknown*,*searchhost*,*shellexperiencehost*,*shellhost*,*sharex*,*notepad*,*explorer*,*everything*,*picpick*,*taskmgr*,*honeyview*,*recorder*,*powertoy*,*startmenu*,*onedrive*,*phoneexperience*,*ApplicationFrameHost*,*onenote*,*SystemSettings*,*Control Panel*,*NVIDIA*,*AMD*,*Bluetooth*,*Volume Control*",
+      "url_pattern": null,
+      "window_title_pattern": null,
+      "chrome_profile": null,
+      "process_path_pattern": null,
+      "tag_id": 3
+    },
+    {
+      "id": 4,
+      "name": "최종분류규칙",
+      "priority": 1,
+      "enabled": true,
+      "process_pattern": "*chrome*",
+      "url_pattern": null,
+      "window_title_pattern": null,
+      "chrome_profile": null,
+      "process_path_pattern": null,
+      "tag_id": 1
+    }
+  ]
+}

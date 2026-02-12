@@ -68,6 +68,7 @@ class DatabaseManager:
 
                 process_name TEXT,
                 window_title TEXT,
+                process_path TEXT,
                 chrome_profile TEXT,
                 chrome_url TEXT,
 
@@ -94,6 +95,14 @@ class DatabaseManager:
             CREATE INDEX IF NOT EXISTS idx_activities_process
             ON activities(process_name)
         """)
+
+        # 기존 테이블에 process_path 컬럼 추가 (마이그레이션)
+        try:
+            cursor.execute("ALTER TABLE activities ADD COLUMN process_path TEXT")
+            self.conn.commit()
+        except Exception:
+            # 이미 컬럼이 존재하면 무시
+            pass
 
         # rules 테이블
         cursor.execute("""
@@ -231,53 +240,35 @@ class DatabaseManager:
                 INSERT OR IGNORE INTO tags (name, color, category) VALUES (?, ?, ?)
             """, (name, color, category))
 
-        # 기본 태그 삽입 (최초 1회만)
-        cursor.execute("SELECT value FROM settings WHERE key='default_tags_seeded'")
-        if not cursor.fetchone():
-            default_tags = [
-                ('업무', '#4CAF50', 'work'),
-                ('휴식', '#EF5350', 'non_work'),
-                ('기타', '#78909C', 'other'),
-            ]
-            for name, color, category in default_tags:
-                cursor.execute("""
-                    INSERT OR IGNORE INTO tags (name, color, category) VALUES (?, ?, ?)
-                """, (name, color, category))
-            cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('default_tags_seeded', '1')")
-
-        # 기본 룰 삽입 (이미 존재하면 무시)
-        # 먼저 태그 ID 조회
+        # 화면 잠금 룰 삽입 (이미 존재하면 무시)
         cursor.execute("SELECT id FROM tags WHERE name='자리비움'")
         away_tag_id = cursor.fetchone()
         if away_tag_id:
             away_tag_id = away_tag_id[0]
-
-            # 자리비움 기본 룰 (이미 존재하면 무시)
             cursor.execute("SELECT COUNT(*) FROM rules WHERE name='화면 잠금'")
             if cursor.fetchone()[0] == 0:
                 cursor.execute("""
                     INSERT INTO rules (name, priority, process_pattern, tag_id)
-                    VALUES ('화면 잠금', 100, '__LOCKED__,__IDLE__', ?)
+                    VALUES ('화면 잠금', 100, '__LOCKED__,lockapp.exe,*__IDLE__*', ?)
                 """, (away_tag_id,))
 
-        # 기본 분류 룰 삽입 (최초 1회만)
+        # 기본 태그/규칙 삽입 (최초 1회만) - JSON에서 import
         cursor.execute("SELECT value FROM settings WHERE key='default_rules_seeded'")
-        seeded = cursor.fetchone()
-        if not seeded:
-            default_rules = [
-                ('업무 분류규칙', 99, '*Matlab*,*windowsterminal*,*powerpnt*', '업무'),
-                ('휴식 분류규칙', 99, '*kakaotalk*,*ActivityTracker*', '휴식'),
-                ('기타 분류규칙', 1, '*explorer*', '기타'),
-            ]
-            for rule_name, priority, process_pattern, tag_name in default_rules:
-                cursor.execute("SELECT id FROM tags WHERE name=?", (tag_name,))
-                tag_row = cursor.fetchone()
-                if tag_row:
-                    cursor.execute("""
-                        INSERT OR IGNORE INTO rules (name, priority, process_pattern, tag_id)
-                        VALUES (?, ?, ?, ?)
-                    """, (rule_name, priority, process_pattern, tag_row[0]))
-            # 시드 완료 표시
+        if not cursor.fetchone():
+            import sys
+            if getattr(sys, 'frozen', False):
+                base_path = Path(sys._MEIPASS)
+            else:
+                base_path = Path(__file__).parent.parent
+            default_json = base_path / "resources" / "default_rules.json"
+
+            if default_json.exists():
+                from backend.import_export import ImportExportManager
+                mgr = ImportExportManager(self)
+                success, msg, stats = mgr.import_rules(str(default_json), merge_mode=True)
+                if success:
+                    print(f"[DB] 기본 규칙 import 완료: 태그 {stats.get('tags_imported', 0)}개, 규칙 {stats.get('rules_imported', 0)}개")
+
             cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('default_rules_seeded', '1')")
 
         self._reconcile_alert_assets()
@@ -476,6 +467,7 @@ class DatabaseManager:
     # === 활동 기록 ===
     def create_activity(self, process_name: Optional[str] = None,
                        window_title: Optional[str] = None,
+                       process_path: Optional[str] = None,
                        chrome_url: Optional[str] = None,
                        chrome_profile: Optional[str] = None,
                        tag_id: Optional[int] = None,
@@ -484,10 +476,10 @@ class DatabaseManager:
         cursor = self.conn.cursor()
         cursor.execute("""
             INSERT INTO activities
-            (start_time, process_name, window_title, chrome_url, chrome_profile,
-             tag_id, rule_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (datetime.now(), process_name, window_title, chrome_url,
+            (start_time, process_name, window_title, process_path, chrome_url,
+             chrome_profile, tag_id, rule_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (datetime.now(), process_name, window_title, process_path, chrome_url,
               chrome_profile, tag_id, rule_id))
         self.conn.commit()
         return cursor.lastrowid
@@ -689,7 +681,7 @@ class DatabaseManager:
         """모든 활동 조회 (전체 재분류용)"""
         cursor = self.conn.cursor()
         cursor.execute("""
-            SELECT id, process_name, window_title, chrome_url, chrome_profile
+            SELECT id, process_name, window_title, process_path, chrome_url, chrome_profile
             FROM activities
             ORDER BY start_time DESC
         """)
@@ -705,7 +697,7 @@ class DatabaseManager:
             return []
 
         cursor.execute("""
-            SELECT id, process_name, window_title, chrome_url, chrome_profile
+            SELECT id, process_name, window_title, process_path, chrome_url, chrome_profile
             FROM activities
             WHERE tag_id = ?
             ORDER BY start_time DESC
