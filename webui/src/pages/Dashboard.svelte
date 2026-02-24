@@ -31,7 +31,7 @@
   let hasDelayedInit = false;
 
   // 날짜 변경 시 데이터 다시 로드 (중복 호출 방지)
-  $: if (hasMounted && $selectedDate && pieChart && barChart && $selectedDate !== lastLoadedDate) {
+  $: if (hasMounted && $selectedDate && $selectedDate !== lastLoadedDate) {
     lastLoadedDate = $selectedDate;
     loadDashboardData($selectedDate);
   }
@@ -250,6 +250,9 @@
         }
       });
     }
+
+    // 차트 생성 시점이 데이터 로드보다 늦을 수 있어 현재 상태를 즉시 반영.
+    updateCharts();
   }
 
   function changeDate(delta) {
@@ -264,6 +267,12 @@
       }
     }
 
+    hasMounted = true;
+    if ($selectedDate) {
+      lastLoadedDate = $selectedDate;
+      loadDashboardData($selectedDate);
+    }
+
     // 앱 최초 진입 때만 차트 초기화를 지연
     if (!hasDelayedInit) {
       setTimeout(() => {
@@ -272,7 +281,6 @@
     } else {
       initCharts();
     }
-    hasMounted = true;
 
     return () => {
       pieChart?.destroy();

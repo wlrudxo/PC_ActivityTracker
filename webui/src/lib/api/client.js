@@ -19,6 +19,27 @@ function getApiBase() {
 }
 
 const API_BASE = getApiBase();
+const API_TIMEOUT_MS = 10000;
+const UPLOAD_TIMEOUT_MS = 30000;
+
+async function fetchWithTimeout(url, config = {}, timeoutMs = API_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...config,
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`Request timeout after ${Math.ceil(timeoutMs / 1000)}s`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 /**
  * Fetch wrapper with error handling
@@ -33,7 +54,7 @@ async function request(endpoint, options = {}) {
     ...options
   };
 
-  const response = await fetch(url, config);
+  const response = await fetchWithTimeout(url, config, API_TIMEOUT_MS);
 
   if (!response.ok) {
     const errorBody = await response.json().catch(() => ({ detail: response.statusText }));
@@ -51,11 +72,11 @@ async function request(endpoint, options = {}) {
 async function uploadRequest(endpoint, formData) {
   const url = `${API_BASE}${endpoint}`;
 
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, {
     method: 'POST',
     body: formData
     // Note: Don't set Content-Type header, browser will set it with boundary
-  });
+  }, UPLOAD_TIMEOUT_MS);
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
