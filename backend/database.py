@@ -57,6 +57,50 @@ class DatabaseManager:
         self._seed_alert_assets()
         self.conn.commit()
 
+    def _fetch_all_dicts(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
+        """조회 결과 전체를 dict 리스트로 반환."""
+        cursor = self.conn.cursor()
+        cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+
+    def _fetch_one_dict(self, query: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
+        """조회 결과 단건을 dict로 반환."""
+        cursor = self.conn.cursor()
+        cursor.execute(query, params)
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def _execute_commit(self, query: str, params: tuple = ()) -> sqlite3.Cursor:
+        """변경 쿼리를 실행하고 commit."""
+        cursor = self.conn.cursor()
+        cursor.execute(query, params)
+        self.conn.commit()
+        return cursor
+
+    def _normalize_tag_category(self, category: Optional[str]) -> str:
+        """유효하지 않은 태그 카테고리는 other로 보정."""
+        return category if category in ('work', 'non_work', 'other') else 'other'
+
+    def _get_named_assets(self, table: str) -> List[Dict[str, Any]]:
+        """이름순 자산 목록 조회."""
+        return self._fetch_all_dicts(f"SELECT * FROM {table} ORDER BY name")
+
+    def _get_asset_by_id(self, table: str, asset_id: int) -> Optional[Dict[str, Any]]:
+        """ID로 자산 단건 조회."""
+        return self._fetch_one_dict(f"SELECT * FROM {table} WHERE id = ?", (asset_id,))
+
+    def _insert_named_asset(self, table: str, name: str, file_path: str) -> int:
+        """이름/경로 기반 자산 추가."""
+        cursor = self._execute_commit(
+            f"INSERT INTO {table} (name, file_path) VALUES (?, ?)",
+            (name, file_path)
+        )
+        return cursor.lastrowid
+
+    def _delete_by_id(self, table: str, row_id: int):
+        """테이블에서 ID 기준 삭제."""
+        self._execute_commit(f"DELETE FROM {table} WHERE id = ?", (row_id,))
+
     def _create_core_tables(self, cursor):
         """핵심 테이블과 인덱스 생성"""
         # tags 테이블
@@ -352,34 +396,22 @@ class DatabaseManager:
     # === 태그 관리 ===
     def get_all_tags(self) -> List[Dict[str, Any]]:
         """모든 태그 조회"""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM tags ORDER BY name")
-        return [dict(row) for row in cursor.fetchall()]
+        return self._fetch_all_dicts("SELECT * FROM tags ORDER BY name")
 
     def get_tag_by_name(self, name: str) -> Optional[Dict[str, Any]]:
         """이름으로 태그 조회"""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM tags WHERE name = ?", (name,))
-        row = cursor.fetchone()
-        return dict(row) if row else None
+        return self._fetch_one_dict("SELECT * FROM tags WHERE name = ?", (name,))
 
     def get_tag_by_id(self, tag_id: int) -> Optional[Dict[str, Any]]:
         """ID로 태그 조회"""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM tags WHERE id = ?", (tag_id,))
-        row = cursor.fetchone()
-        return dict(row) if row else None
+        return self._fetch_one_dict("SELECT * FROM tags WHERE id = ?", (tag_id,))
 
     def create_tag(self, name: str, color: str, category: str = 'other') -> int:
         """태그 생성"""
-        # 유효한 카테고리 값만 허용
-        if category not in ('work', 'non_work', 'other'):
-            category = 'other'
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT INTO tags (name, color, category) VALUES (?, ?, ?)
-        """, (name, color, category))
-        self.conn.commit()
+        cursor = self._execute_commit(
+            "INSERT INTO tags (name, color, category) VALUES (?, ?, ?)",
+            (name, color, self._normalize_tag_category(category))
+        )
         return cursor.lastrowid
 
     def update_tag(self, tag_id: int, name: Optional[str] = None,
@@ -403,10 +435,8 @@ class DatabaseManager:
             updates.append("color = ?")
             values.append(color)
         if category is not None:
-            # 유효한 카테고리 값만 허용
-            if category in ('work', 'non_work', 'other'):
-                updates.append("category = ?")
-                values.append(category)
+            updates.append("category = ?")
+            values.append(self._normalize_tag_category(category))
         if alert_enabled is not None:
             updates.append("alert_enabled = ?")
             values.append(1 if alert_enabled else 0)
@@ -435,9 +465,7 @@ class DatabaseManager:
 
     def delete_tag(self, tag_id: int):
         """태그 삭제 (activities.tag_id는 NULL로)"""
-        cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
-        self.conn.commit()
+        self._delete_by_id("tags", tag_id)
 
     # === 활동 기록 ===
     def create_activity(self, process_name: Optional[str] = None,
@@ -525,8 +553,7 @@ class DatabaseManager:
     def get_stats_by_tag(self, start_date: datetime,
                         end_date: datetime) -> List[Dict[str, Any]]:
         """태그별 사용 시간 통계"""
-        cursor = self.conn.cursor()
-        cursor.execute("""
+        return self._fetch_all_dicts("""
             SELECT
                 t.id AS tag_id,
                 t.name AS tag_name,
@@ -539,13 +566,11 @@ class DatabaseManager:
             GROUP BY t.id
             ORDER BY total_seconds DESC
         """, (start_date, end_date))
-        return [dict(row) for row in cursor.fetchall()]
 
     def get_hourly_stats(self, start_date: datetime,
                          end_date: datetime) -> List[Dict[str, Any]]:
         """시간대별 태그 통계 (SQL 집계)"""
-        cursor = self.conn.cursor()
-        cursor.execute("""
+        return self._fetch_all_dicts("""
             SELECT
                 CAST(strftime('%H', a.start_time) AS INTEGER) AS hour,
                 t.id AS tag_id,
@@ -559,13 +584,11 @@ class DatabaseManager:
             GROUP BY hour, t.id
             ORDER BY hour, total_seconds DESC
         """, (start_date, end_date))
-        return [dict(row) for row in cursor.fetchall()]
 
     def get_stats_by_process(self, start_date: datetime,
                             end_date: datetime, limit: int = 10) -> List[Dict[str, Any]]:
         """프로세스별 사용 시간 통계 (__IDLE__, __LOCKED__, LockApp.exe 제외)"""
-        cursor = self.conn.cursor()
-        cursor.execute("""
+        return self._fetch_all_dicts("""
             SELECT
                 process_name,
                 SUM((julianday(COALESCE(end_time, datetime('now', 'localtime'))) -
@@ -579,7 +602,6 @@ class DatabaseManager:
             ORDER BY total_seconds DESC
             LIMIT ?
         """, (start_date, end_date, limit))
-        return [dict(row) for row in cursor.fetchall()]
 
     # === 룰 관리 ===
     def get_all_rules(self, enabled_only: bool = False,
@@ -597,15 +619,12 @@ class DatabaseManager:
 
     def get_rule_by_id(self, rule_id: int) -> Optional[Dict[str, Any]]:
         """ID로 룰 조회"""
-        cursor = self.conn.cursor()
-        cursor.execute("""
+        return self._fetch_one_dict("""
             SELECT r.*, t.name as tag_name
             FROM rules r
             JOIN tags t ON r.tag_id = t.id
             WHERE r.id = ?
         """, (rule_id,))
-        row = cursor.fetchone()
-        return dict(row) if row else None
 
     def create_rule(self, name: str, tag_id: int, priority: int = 0,
                    enabled: bool = True, process_pattern: Optional[str] = None,
@@ -647,9 +666,7 @@ class DatabaseManager:
 
     def delete_rule(self, rule_id: int):
         """룰 삭제"""
-        cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM rules WHERE id = ?", (rule_id,))
-        self.conn.commit()
+        self._delete_by_id("rules", rule_id)
 
     # === 미분류 재분류 ===
     def get_all_activities_for_reclassify(self) -> List[Dict[str, Any]]:
@@ -701,76 +718,49 @@ class DatabaseManager:
     # === 전역 설정 ===
     def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
         """설정 값 조회"""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
-        row = cursor.fetchone()
+        row = self._fetch_one_dict("SELECT value FROM settings WHERE key = ?", (key,))
         return row['value'] if row else default
 
     def set_setting(self, key: str, value: str):
         """설정 값 저장"""
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)
-        """, (key, value))
-        self.conn.commit()
+        self._execute_commit(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (key, value)
+        )
 
     # === 알림음 관리 ===
     def get_all_alert_sounds(self) -> List[Dict[str, Any]]:
         """모든 알림음 조회"""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM alert_sounds ORDER BY name")
-        return [dict(row) for row in cursor.fetchall()]
+        return self._get_named_assets("alert_sounds")
 
     def get_alert_sound_by_id(self, sound_id: int) -> Optional[Dict[str, Any]]:
         """ID로 알림음 조회"""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM alert_sounds WHERE id = ?", (sound_id,))
-        row = cursor.fetchone()
-        return dict(row) if row else None
+        return self._get_asset_by_id("alert_sounds", sound_id)
 
     def add_alert_sound(self, name: str, file_path: str) -> int:
         """알림음 추가"""
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT INTO alert_sounds (name, file_path) VALUES (?, ?)
-        """, (name, file_path))
-        self.conn.commit()
-        return cursor.lastrowid
+        return self._insert_named_asset("alert_sounds", name, file_path)
 
     def delete_alert_sound(self, sound_id: int):
         """알림음 삭제"""
-        cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM alert_sounds WHERE id = ?", (sound_id,))
-        self.conn.commit()
+        self._delete_by_id("alert_sounds", sound_id)
 
     # === 알림 이미지 관리 ===
     def get_all_alert_images(self) -> List[Dict[str, Any]]:
         """모든 알림 이미지 조회"""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM alert_images ORDER BY name")
-        return [dict(row) for row in cursor.fetchall()]
+        return self._get_named_assets("alert_images")
 
     def get_alert_image_by_id(self, image_id: int) -> Optional[Dict[str, Any]]:
         """ID로 알림 이미지 조회"""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM alert_images WHERE id = ?", (image_id,))
-        row = cursor.fetchone()
-        return dict(row) if row else None
+        return self._get_asset_by_id("alert_images", image_id)
 
     def add_alert_image(self, name: str, file_path: str) -> int:
         """알림 이미지 추가"""
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT INTO alert_images (name, file_path) VALUES (?, ?)
-        """, (name, file_path))
-        self.conn.commit()
-        return cursor.lastrowid
+        return self._insert_named_asset("alert_images", name, file_path)
 
     def delete_alert_image(self, image_id: int):
         """알림 이미지 삭제"""
-        cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM alert_images WHERE id = ?", (image_id,))
-        self.conn.commit()
+        self._delete_by_id("alert_images", image_id)
 
     # === 집중 모드 이벤트 ===
     def add_focus_event(self, event_type: str, details: Optional[str] = None) -> int:
