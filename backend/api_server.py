@@ -63,6 +63,8 @@ ALERT_SETTING_SPECS = {
     'image_selected': ('alert_image_selected', lambda value: str(value)),
 }
 
+SKIPPED_SYSTEM_TAGS = {'자리비움', '미분류'}
+
 
 def set_runtime_engines(rule_engine, focus_blocker, log_generator=None, monitor_engine=None, exit_callback=None):
     """런타임 엔진 인스턴스 설정 (main_webview.py에서 호출)"""
@@ -162,6 +164,175 @@ def _apply_alert_settings_update(db: DatabaseManager, update_data: dict[str, Any
     for input_key, (setting_key, serializer) in ALERT_SETTING_SPECS.items():
         if input_key in update_data:
             db.set_setting(setting_key, serializer(update_data[input_key]))
+
+
+def _parse_date_arg(value: str, field_name: str = "date") -> datetime:
+    """YYYY-MM-DD 문자열을 datetime으로 변환."""
+    try:
+        return datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, f"Invalid {field_name} format. Use YYYY-MM-DD")
+
+
+def _is_excluded_system_tag(tag_name: Optional[str]) -> bool:
+    """집계/설정 UI에서 제외할 시스템 태그 여부."""
+    return tag_name in SKIPPED_SYSTEM_TAGS
+
+
+def _build_tag_lookup(tags: list[dict]) -> dict[int, dict]:
+    """태그 목록을 ID 기준 맵으로 변환."""
+    return {tag['id']: tag for tag in tags}
+
+
+def _with_tag_category(tag_stats: list[dict], all_tags: dict[int, dict]) -> list[dict]:
+    """태그 통계에 category를 채우고 시스템 태그를 제외."""
+    filtered = []
+    for stat in tag_stats:
+        if _is_excluded_system_tag(stat.get('tag_name')):
+            continue
+        tag_info = all_tags.get(stat.get('tag_id'), {})
+        stat['category'] = tag_info.get('category', 'other')
+        filtered.append(stat)
+    return filtered
+
+
+def _build_daily_summary(activities: list[dict], tag_stats: list[dict]) -> dict[str, Any]:
+    """일간 대시보드 summary 계산."""
+    total_seconds = sum(s.get('total_seconds', 0) or 0 for s in tag_stats)
+    first_activity = None
+    last_activity = None
+    tag_switches = 0
+    prev_tag = None
+
+    if activities:
+        sorted_activities = sorted(activities, key=lambda item: item['start_time'])
+        first_activity = sorted_activities[0]['start_time']
+        last_activity = sorted_activities[-1]['start_time']
+
+        for activity in sorted_activities:
+            current_tag = activity.get('tag_id')
+            if prev_tag is not None and current_tag != prev_tag:
+                tag_switches += 1
+            prev_tag = current_tag
+
+    return {
+        "totalSeconds": total_seconds,
+        "activityCount": len(activities),
+        "firstActivity": first_activity,
+        "lastActivity": last_activity,
+        "tagSwitches": tag_switches
+    }
+
+
+def _collect_daily_trend_and_websites(
+    activities: list[dict],
+    all_tags: dict[int, dict],
+    start_date: datetime,
+    end_date_parsed: datetime
+) -> tuple[list[dict], list[dict]]:
+    """분석 페이지용 dailyTrend/websiteStats를 생성."""
+    daily_data = defaultdict(lambda: defaultdict(float))
+    domain_stats = defaultdict(float)
+
+    for activity in activities:
+        act_start = activity.get('start_time')
+        act_end = activity.get('end_time')
+        tag_id = activity.get('tag_id')
+
+        if not act_start:
+            continue
+
+        if isinstance(act_start, str):
+            act_start = datetime.fromisoformat(act_start)
+        if isinstance(act_end, str):
+            act_end = datetime.fromisoformat(act_end) if act_end else datetime.now()
+        elif act_end is None:
+            act_end = datetime.now()
+
+        duration = (act_end - act_start).total_seconds()
+        date_key = act_start.strftime("%Y-%m-%d")
+
+        if tag_id:
+            daily_data[date_key][tag_id] += duration
+
+        chrome_url = activity.get('chrome_url')
+        if chrome_url:
+            try:
+                parsed = urlparse(chrome_url)
+                domain = parsed.netloc or parsed.path.split('/')[0]
+                if domain:
+                    domain_stats[domain] += duration
+            except Exception:
+                pass
+
+    daily_trend = []
+    current = start_date
+    while current <= end_date_parsed:
+        date_key = current.strftime("%Y-%m-%d")
+        tags_for_day = []
+        for tag_id, seconds in daily_data.get(date_key, {}).items():
+            tag_info = all_tags.get(tag_id, {})
+            if _is_excluded_system_tag(tag_info.get('name')):
+                continue
+            tags_for_day.append({
+                "tag_id": tag_id,
+                "tag_name": tag_info.get('name', '미분류'),
+                "tag_color": tag_info.get('color', '#607D8B'),
+                "category": tag_info.get('category', 'other'),
+                "seconds": round(seconds)
+            })
+        daily_trend.append({
+            "date": date_key,
+            "tags": sorted(tags_for_day, key=lambda item: item['seconds'], reverse=True)
+        })
+        current += timedelta(days=1)
+
+    website_stats = [
+        {"domain": domain, "total_seconds": round(seconds)}
+        for domain, seconds in sorted(domain_stats.items(), key=lambda item: item[1], reverse=True)[:10]
+    ]
+    return daily_trend, website_stats
+
+
+def _build_hourly_stats_payload(raw_stats: list[dict]) -> list[dict]:
+    """시간대별 태그 통계를 프론트 응답 형태로 직렬화."""
+    hourly_data = {hour: [] for hour in range(24)}
+    for row in raw_stats:
+        if _is_excluded_system_tag(row.get('tag_name')):
+            continue
+        seconds = row.get('total_seconds', 0) or 0
+        hourly_data[row['hour']].append({
+            "tag_id": row['tag_id'],
+            "tag_name": row.get('tag_name', 'Unknown'),
+            "tag_color": row.get('tag_color', '#888888'),
+            "seconds": int(seconds),
+            "minutes": round(seconds / 60, 1)
+        })
+    return [{"hour": hour, "tags": hourly_data[hour]} for hour in range(24)]
+
+
+def _serialize_focus_tag(tag: dict) -> dict[str, Any]:
+    """집중 모드 설정용 태그 직렬화."""
+    return {
+        "id": tag['id'],
+        "name": tag['name'],
+        "color": tag['color'],
+        "block_enabled": bool(tag.get('block_enabled', 0)),
+        "block_start_time": tag.get('block_start_time') or None,
+        "block_end_time": tag.get('block_end_time') or None
+    }
+
+
+def _serialize_tag_alert(tag: dict) -> dict[str, Any]:
+    """태그별 알림 설정 직렬화."""
+    return {
+        "id": tag['id'],
+        "name": tag['name'],
+        "color": tag['color'],
+        "alert_enabled": bool(tag.get('alert_enabled', 0)),
+        "alert_message": tag.get('alert_message') or '',
+        "alert_cooldown": tag.get('alert_cooldown') or 30
+    }
 
 
 # === Pydantic Models ===
@@ -291,70 +462,22 @@ app.add_middleware(
 @app.get("/api/dashboard/daily")
 async def get_dashboard_daily(date: str = Query(..., description="YYYY-MM-DD format")):
     """일간 대시보드 통계"""
-    try:
-        target_date = datetime.strptime(date, "%Y-%m-%d")
-    except ValueError:
-        raise HTTPException(400, "Invalid date format. Use YYYY-MM-DD")
+    target_date = _parse_date_arg(date)
 
     start = datetime.combine(target_date.date(), datetime.min.time())
     end = start + timedelta(days=1)
 
     db = get_db()
-
-    # 태그별 통계
-    tag_stats = db.get_stats_by_tag(start, end)
-    all_tags = {t['id']: t for t in db.get_all_tags()}
-
-    # 프로세스별 통계
+    all_tags = _build_tag_lookup(db.get_all_tags())
+    tag_stats = _with_tag_category(db.get_stats_by_tag(start, end), all_tags)
     process_stats = db.get_stats_by_process(start, end, limit=10)
-
-    # 활동 목록 (요약용)
     activities = db.get_activities(start, end)
-
-    # 총 활동 시간 계산 (자리비움 제외)
-    total_seconds = sum(
-        s.get('total_seconds', 0) or 0
-        for s in tag_stats
-        if s.get('tag_name') != '자리비움'
-    )
-
-    # 태그 통계에서 자리비움 제외 + category 추가
-    tag_stats_filtered = []
-    for s in tag_stats:
-        if s.get('tag_name') == '자리비움':
-            continue
-        tag_info = all_tags.get(s.get('tag_id'), {})
-        s['category'] = tag_info.get('category', 'other')
-        tag_stats_filtered.append(s)
-    tag_stats = tag_stats_filtered
-
-    # 첫/마지막 활동 시간 + 태그 전환 횟수 계산
-    first_activity = None
-    last_activity = None
-    tag_switches = 0
-    prev_tag = None
-
-    if activities:
-        sorted_activities = sorted(activities, key=lambda x: x['start_time'])
-        first_activity = sorted_activities[0]['start_time']
-        last_activity = sorted_activities[-1]['start_time']
-
-        for act in sorted_activities:
-            if prev_tag is not None and act.get('tag_id') != prev_tag:
-                tag_switches += 1
-            prev_tag = act.get('tag_id')
 
     return {
         "date": date,
         "tagStats": tag_stats,
         "processStats": process_stats,
-        "summary": {
-            "totalSeconds": total_seconds,
-            "activityCount": len(activities),
-            "firstActivity": first_activity,
-            "lastActivity": last_activity,
-            "tagSwitches": tag_switches
-        }
+        "summary": _build_daily_summary(activities, tag_stats)
     }
 
 
@@ -364,97 +487,21 @@ async def get_dashboard_period(
     end: str = Query(..., description="End date YYYY-MM-DD")
 ):
     """기간별 대시보드 통계 (분석 페이지용)"""
-    try:
-        start_date = datetime.strptime(start, "%Y-%m-%d")
-        end_date_parsed = datetime.strptime(end, "%Y-%m-%d")
-        end_date = end_date_parsed + timedelta(days=1)
-    except ValueError:
-        raise HTTPException(400, "Invalid date format. Use YYYY-MM-DD")
+    start_date = _parse_date_arg(start, "start")
+    end_date_parsed = _parse_date_arg(end, "end")
+    end_date = end_date_parsed + timedelta(days=1)
 
     db = get_db()
-
-    # 기본 통계
-    tag_stats = db.get_stats_by_tag(start_date, end_date)
+    all_tags = _build_tag_lookup(db.get_all_tags())
+    tag_stats_filtered = _with_tag_category(db.get_stats_by_tag(start_date, end_date), all_tags)
     process_stats = db.get_stats_by_process(start_date, end_date, limit=10)
-
-    # 전체 활동 가져오기 (dailyTrend, websiteStats 계산용)
     activities = db.get_activities(start_date, end_date)
-    all_tags = {t['id']: t for t in db.get_all_tags()}
-
-    # tagStats에 category 정보 추가 및 자리비움 제외
-    tag_stats_filtered = []
-    for s in tag_stats:
-        if s.get('tag_name') == '자리비움':
-            continue
-        tag_info = all_tags.get(s.get('tag_id'), {})
-        s['category'] = tag_info.get('category', 'other')
-        tag_stats_filtered.append(s)
-
-    # === dailyTrend + websiteStats: 한 번의 순회로 계산 ===
-    daily_data = defaultdict(lambda: defaultdict(float))
-    domain_stats = defaultdict(float)
-
-    for act in activities:
-        act_start = act.get('start_time')
-        act_end = act.get('end_time')
-        tag_id = act.get('tag_id')
-
-        if not act_start:
-            continue
-
-        if isinstance(act_start, str):
-            act_start = datetime.fromisoformat(act_start)
-        if isinstance(act_end, str):
-            act_end = datetime.fromisoformat(act_end) if act_end else datetime.now()
-        elif act_end is None:
-            act_end = datetime.now()
-
-        duration = (act_end - act_start).total_seconds()
-        date_key = act_start.strftime("%Y-%m-%d")
-
-        # dailyTrend 집계
-        if tag_id:
-            daily_data[date_key][tag_id] += duration
-
-        # websiteStats 집계
-        chrome_url = act.get('chrome_url')
-        if chrome_url:
-            try:
-                parsed = urlparse(chrome_url)
-                domain = parsed.netloc or parsed.path.split('/')[0]
-                if domain:
-                    domain_stats[domain] += duration
-            except Exception:
-                pass
-
-    # dailyTrend 형식으로 변환 (category 포함)
-    daily_trend = []
-    current = start_date
-    while current <= end_date_parsed:
-        date_key = current.strftime("%Y-%m-%d")
-        tags_for_day = []
-        for tag_id, seconds in daily_data.get(date_key, {}).items():
-            tag_info = all_tags.get(tag_id, {})
-            if tag_info.get('name') == '자리비움':
-                continue
-            tags_for_day.append({
-                "tag_id": tag_id,
-                "tag_name": tag_info.get('name', '미분류'),
-                "tag_color": tag_info.get('color', '#607D8B'),
-                "category": tag_info.get('category', 'other'),
-                "seconds": round(seconds)
-            })
-        daily_trend.append({
-            "date": date_key,
-            "tags": sorted(tags_for_day, key=lambda x: x['seconds'], reverse=True)
-        })
-        current += timedelta(days=1)
-
-    # websiteStats 형식으로 변환
-    website_stats = [
-        {"domain": domain, "total_seconds": round(seconds)}
-        for domain, seconds in sorted(domain_stats.items(), key=lambda x: x[1], reverse=True)[:10]
-    ]
+    daily_trend, website_stats = _collect_daily_trend_and_websites(
+        activities,
+        all_tags,
+        start_date,
+        end_date_parsed
+    )
 
     # === summary: 총 활동 시간, 목표 달성 일수 ===
     # 설정에서 목표값 로드 (기본값: 7시간, 20%)
@@ -502,41 +549,15 @@ async def get_dashboard_period(
 @app.get("/api/dashboard/hourly")
 async def get_dashboard_hourly(date: str = Query(..., description="YYYY-MM-DD format")):
     """시간대별 태그 통계 (0시~23시) - SQL 집계로 최적화"""
-    try:
-        target_date = datetime.strptime(date, "%Y-%m-%d")
-    except ValueError:
-        raise HTTPException(400, "Invalid date format. Use YYYY-MM-DD")
+    target_date = _parse_date_arg(date)
 
     db = get_db()
     start = datetime.combine(target_date.date(), datetime.min.time())
     end = start + timedelta(days=1)
 
-    # SQL 집계로 시간대별 통계 조회 (Python 루프 제거)
-    raw_stats = db.get_hourly_stats(start, end)
-
-    # 시간대별로 그룹핑
-    hourly_data = {h: [] for h in range(24)}
-    for row in raw_stats:
-        hour = row['hour']
-        tag_name = row.get('tag_name', 'Unknown')
-        # 자리비움 제외
-        if tag_name == '자리비움':
-            continue
-        seconds = row.get('total_seconds', 0) or 0
-        hourly_data[hour].append({
-            "tag_id": row['tag_id'],
-            "tag_name": tag_name,
-            "tag_color": row.get('tag_color', '#888888'),
-            "seconds": int(seconds),
-            "minutes": round(seconds / 60, 1)
-        })
-
-    # 결과 포맷팅
-    result = [{"hour": h, "tags": hourly_data[h]} for h in range(24)]
-
     return {
         "date": date,
-        "hourlyStats": result
+        "hourlyStats": _build_hourly_stats_payload(db.get_hourly_stats(start, end))
     }
 
 
@@ -548,10 +569,7 @@ async def get_timeline(
     tag_id: Optional[int] = Query(None, description="Filter by tag ID")
 ):
     """타임라인 조회"""
-    try:
-        target_date = datetime.strptime(date, "%Y-%m-%d")
-    except ValueError:
-        raise HTTPException(400, "Invalid date format. Use YYYY-MM-DD")
+    target_date = _parse_date_arg(date)
 
     start = datetime.combine(target_date.date(), datetime.min.time())
     end = start + timedelta(days=1)
@@ -816,23 +834,13 @@ async def get_focus_settings():
     """집중 모드 설정 조회 (태그별)"""
     db = get_db()
     tags = db.get_all_tags()
-
-    focus_settings = []
-    for tag in tags:
-        # 자리비움, 미분류 태그는 차단 대상에서 제외
-        if tag['name'] in ('자리비움', '미분류'):
-            continue
-
-        focus_settings.append({
-            "id": tag['id'],
-            "name": tag['name'],
-            "color": tag['color'],
-            "block_enabled": bool(tag.get('block_enabled', 0)),
-            "block_start_time": tag.get('block_start_time') or None,
-            "block_end_time": tag.get('block_end_time') or None
-        })
-
-    return {"focusSettings": focus_settings}
+    return {
+        "focusSettings": [
+            _serialize_focus_tag(tag)
+            for tag in tags
+            if not _is_excluded_system_tag(tag['name'])
+        ]
+    }
 
 
 @app.get("/api/focus/status")
@@ -845,7 +853,7 @@ async def get_focus_status():
     for tag in tags:
         if not tag.get('block_enabled'):
             continue
-        if tag['name'] in ('자리비움', '미분류'):
+        if _is_excluded_system_tag(tag['name']):
             continue
 
         start_time = tag.get('block_start_time')
@@ -1157,23 +1165,13 @@ async def get_tag_alert_settings():
     """태그별 알림 설정 조회"""
     db = get_db()
     tags = db.get_all_tags()
-
-    result = []
-    for tag in tags:
-        # 자리비움, 미분류는 알림 대상에서 제외
-        if tag['name'] in ('자리비움', '미분류'):
-            continue
-
-        result.append({
-            "id": tag['id'],
-            "name": tag['name'],
-            "color": tag['color'],
-            "alert_enabled": bool(tag.get('alert_enabled', 0)),
-            "alert_message": tag.get('alert_message') or '',
-            "alert_cooldown": tag.get('alert_cooldown') or 30
-        })
-
-    return {"tags": result}
+    return {
+        "tags": [
+            _serialize_tag_alert(tag)
+            for tag in tags
+            if not _is_excluded_system_tag(tag['name'])
+        ]
+    }
 
 
 @app.put("/api/alerts/tags/{tag_id}")
