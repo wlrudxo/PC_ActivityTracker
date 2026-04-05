@@ -17,6 +17,66 @@ export function shiftLocalDate(dateString, deltaDays) {
 // Selected date for dashboard/timeline
 export const selectedDate = writable(formatLocalDate());
 
+let autoDateTimer = null;
+let autoDateWatcherStarted = false;
+let trackedToday = formatLocalDate();
+
+function clearAutoDateTimer() {
+  if (autoDateTimer) {
+    clearTimeout(autoDateTimer);
+    autoDateTimer = null;
+  }
+}
+
+function scheduleNextDateBoundaryCheck() {
+  clearAutoDateTimer();
+
+  const now = new Date();
+  const nextMidnight = new Date(now);
+  nextMidnight.setHours(24, 0, 1, 0);
+  const delay = Math.max(nextMidnight.getTime() - now.getTime(), 1000);
+
+  autoDateTimer = setTimeout(() => {
+    syncSelectedDateWithToday();
+    scheduleNextDateBoundaryCheck();
+  }, delay);
+}
+
+export function syncSelectedDateWithToday() {
+  const today = formatLocalDate();
+  if (today === trackedToday) return;
+
+  const previousToday = trackedToday;
+  trackedToday = today;
+
+  selectedDate.update((current) => current === previousToday ? today : current);
+}
+
+export function startSelectedDateAutoSync() {
+  if (autoDateWatcherStarted || typeof window === 'undefined') {
+    return () => {};
+  }
+
+  autoDateWatcherStarted = true;
+  trackedToday = formatLocalDate();
+
+  const handleVisibilityOrFocus = () => {
+    syncSelectedDateWithToday();
+    scheduleNextDateBoundaryCheck();
+  };
+
+  scheduleNextDateBoundaryCheck();
+  document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+  window.addEventListener('focus', handleVisibilityOrFocus);
+
+  return () => {
+    clearAutoDateTimer();
+    document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.removeEventListener('focus', handleVisibilityOrFocus);
+    autoDateWatcherStarted = false;
+  };
+}
+
 // Derived: formatted current time
 export const formattedDate = derived(selectedDate, ($date) => {
   const d = new Date($date);

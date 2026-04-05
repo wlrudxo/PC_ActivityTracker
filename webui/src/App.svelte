@@ -1,6 +1,8 @@
 <script>
+  import { onMount } from 'svelte';
   import Router from 'svelte-spa-router';
   import Layout from './lib/components/Layout.svelte';
+  import { startSelectedDateAutoSync } from './lib/stores/app.js';
 
   import Dashboard from './pages/Dashboard.svelte';
   import Timeline from './pages/Timeline.svelte';
@@ -19,6 +21,8 @@
     '/focus': Focus,
     '/settings': Settings
   };
+
+  onMount(() => startSelectedDateAutoSync());
 </script>
 
 <Layout>
