@@ -60,6 +60,68 @@
   let emergencyCountdownInterval = null;
   let emergencyInProgress = false;
 
+  function isNativeApp() {
+    return Boolean(window.pywebview?.api);
+  }
+
+  function mapSettingsResponse(settingsRes) {
+    const idleThresholdSec = parseInt(settingsRes.settings?.idle_threshold || '300');
+    return {
+      polling_interval: settingsRes.settings?.polling_interval || '2',
+      idle_threshold: String(Math.round(idleThresholdSec / 60)),
+      log_retention_days: settingsRes.settings?.log_retention_days || '30',
+      target_daily_hours: settingsRes.settings?.target_daily_hours || '7',
+      target_distraction_ratio: settingsRes.settings?.target_distraction_ratio || '20'
+    };
+  }
+
+  function buildSettingsPayload() {
+    return {
+      ...settings,
+      idle_threshold: String(parseInt(settings.idle_threshold) * 60)
+    };
+  }
+
+  function downloadJson(filename, data) {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    window.URL.revokeObjectURL(url);
+  }
+
+  function selectFile(inputRef) {
+    inputRef?.click();
+  }
+
+  function resetDbRestoreState() {
+    showDbRestoreModal = false;
+    dbRestoreFile = null;
+  }
+
+  function resetRulesImportState() {
+    showRulesImportModal = false;
+    rulesImportFile = null;
+    rulesImportMergeMode = true;
+  }
+
+  function resetExitState() {
+    showExitModal = false;
+    activeBlocks = [];
+  }
+
+  function resetEmergencyState() {
+    if (emergencyCountdownInterval) {
+      clearInterval(emergencyCountdownInterval);
+      emergencyCountdownInterval = null;
+    }
+    emergencyCountdown = 0;
+    showEmergencyModal = false;
+    emergencyReason = '';
+  }
+
   function resolveAppIconSrc() {
     if (typeof window === 'undefined') return '';
     if (window.location.protocol === 'file:') {
@@ -78,16 +140,7 @@
         api.getAutoStart()
       ]);
 
-      // idle_threshold: DB는 초 단위, UI는 분 단위
-      const idleThresholdSec = parseInt(settingsRes.settings?.idle_threshold || '300');
-      settings = {
-        polling_interval: settingsRes.settings?.polling_interval || '2',
-        idle_threshold: String(Math.round(idleThresholdSec / 60)),  // 초 → 분
-        log_retention_days: settingsRes.settings?.log_retention_days || '30',
-        target_daily_hours: settingsRes.settings?.target_daily_hours || '7',
-        target_distraction_ratio: settingsRes.settings?.target_distraction_ratio || '20'
-      };
-
+      settings = mapSettingsResponse(settingsRes);
       autoStartEnabled = autoStartRes.enabled;
     } catch (err) {
       console.error('Failed to load settings:', err);
@@ -100,12 +153,7 @@
   async function saveSettings() {
     saving = true;
     try {
-      // idle_threshold: UI는 분 단위, DB는 초 단위로 저장
-      const settingsToSave = {
-        ...settings,
-        idle_threshold: String(parseInt(settings.idle_threshold) * 60)  // 분 → 초
-      };
-      await api.updateSettings({ settings: settingsToSave });
+      await api.updateSettings({ settings: buildSettingsPayload() });
       toast.success('설정이 저장되었습니다.');
     } catch (err) {
       toast.error('저장 실패: ' + err.message);
@@ -146,7 +194,7 @@
     backupInProgress = true;
     try {
       // PyWebView 네이티브 저장 다이얼로그 사용
-      if (window.pywebview?.api?.save_backup) {
+      if (isNativeApp() && window.pywebview.api.save_backup) {
         const result = await window.pywebview.api.save_backup(backupIncludeMedia);
         if (result.success) {
           toast.success(result.message);
@@ -166,7 +214,7 @@
   }
 
   function triggerDbRestore() {
-    dbRestoreInput.click();
+    selectFile(dbRestoreInput);
   }
 
   function handleDbRestoreSelect(event) {
@@ -189,13 +237,12 @@
       toast.error('복원 실패: ' + err.message);
     } finally {
       restoreInProgress = false;
-      dbRestoreFile = null;
+      resetDbRestoreState();
     }
   }
 
   function cancelDbRestore() {
-    showDbRestoreModal = false;
-    dbRestoreFile = null;
+    resetDbRestoreState();
   }
 
   // === Rules Export/Import ===
@@ -203,7 +250,7 @@
     rulesExportInProgress = true;
     try {
       // PyWebView 네이티브 저장 다이얼로그 사용
-      if (window.pywebview?.api?.save_rules_export) {
+      if (isNativeApp() && window.pywebview.api.save_rules_export) {
         const result = await window.pywebview.api.save_rules_export();
         if (result.success) {
           const stats = result.stats || {};
@@ -214,15 +261,9 @@
       } else {
         // 폴백: 기존 방식 (브라우저)
         const data = await api.exportRules();
-        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
         const filename = `rules_export_${timestamp}.json`;
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        a.click();
-        window.URL.revokeObjectURL(url);
+        downloadJson(filename, data);
         toast.success(`룰 내보내기 완료 (태그 ${data.tags?.length || 0}개, 룰 ${data.rules?.length || 0}개)`);
       }
     } catch (err) {
@@ -233,7 +274,7 @@
   }
 
   function triggerRulesImport() {
-    rulesImportInput.click();
+    selectFile(rulesImportInput);
   }
 
   function handleRulesFileSelect(event) {
@@ -253,8 +294,7 @@
     try {
       const res = await api.importRules(rulesImportFile, rulesImportMergeMode);
       toast.success(res.message);
-      showRulesImportModal = false;
-      rulesImportFile = null;
+      resetRulesImportState();
     } catch (err) {
       toast.error('가져오기 실패: ' + err.message);
     } finally {
@@ -263,8 +303,7 @@
   }
 
   function cancelRulesImport() {
-    showRulesImportModal = false;
-    rulesImportFile = null;
+    resetRulesImportState();
   }
 
   // === App Exit ===
@@ -284,7 +323,7 @@
     exitInProgress = true;
     try {
       // pywebview API 사용 (네이티브 앱)
-      if (window.pywebview?.api?.exit_app) {
+      if (isNativeApp() && window.pywebview.api.exit_app) {
         await window.pywebview.api.exit_app();
       } else {
         // fallback: REST API (개발 모드)
@@ -298,8 +337,7 @@
   }
 
   function cancelExit() {
-    showExitModal = false;
-    activeBlocks = [];
+    resetExitState();
   }
 
   // === Emergency Reset ===
@@ -335,8 +373,7 @@
       } else {
         toast.info('해제할 집중 모드가 없습니다.');
       }
-      showEmergencyModal = false;
-      emergencyReason = '';
+      resetEmergencyState();
     } catch (err) {
       toast.error('긴급 해제 실패: ' + err.message);
     } finally {
@@ -345,13 +382,7 @@
   }
 
   function cancelEmergencyReset() {
-    if (emergencyCountdownInterval) {
-      clearInterval(emergencyCountdownInterval);
-      emergencyCountdownInterval = null;
-    }
-    emergencyCountdown = 0;
-    showEmergencyModal = false;
-    emergencyReason = '';
+    resetEmergencyState();
   }
 
   onMount(() => {
