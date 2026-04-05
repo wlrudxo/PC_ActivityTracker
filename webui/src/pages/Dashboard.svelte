@@ -104,10 +104,8 @@
     } catch (err) {
       console.error('Failed to load dashboard data:', err);
       error = err.message;
-      // API 연결 실패 시 데모 데이터 유지
-      if (tagStats.length === 0) {
-        loadDemoData();
-      }
+      resetDashboardData();
+      updateCharts();
     } finally {
       if (!silent) {
         loading = false;
@@ -121,25 +119,16 @@
     }
   }
 
-  function loadDemoData() {
-    tagStats = [
-      { id: 1, name: '업무', color: '#4CAF50', category: 'work', duration: 14400, percentage: 60 },
-      { id: 2, name: '휴식', color: '#FF5722', category: 'non_work', duration: 4800, percentage: 20 },
-      { id: 3, name: '자리비움', color: '#9E9E9E', category: 'other', duration: 2400, percentage: 10 },
-      { id: 4, name: '미분류', color: '#607D8B', category: 'other', duration: 2400, percentage: 10 }
-    ];
-    processStats = [
-      { name: 'chrome.exe', duration: 9600, percentage: 40 },
-      { name: 'Code.exe', duration: 7200, percentage: 30 },
-      { name: 'explorer.exe', duration: 4800, percentage: 20 },
-      { name: 'Discord.exe', duration: 2400, percentage: 10 }
-    ];
+  function resetDashboardData() {
+    tagStats = [];
+    processStats = [];
+    hourlyStats = [];
     summaryStats = {
-      totalSeconds: 24000,
-      activityCount: 156,
-      firstActivity: '09:15',
-      lastActivity: '18:45',
-      tagSwitches: 42
+      totalSeconds: 0,
+      activityCount: 0,
+      firstActivity: '-',
+      lastActivity: '-',
+      tagSwitches: 0
     };
   }
 
@@ -330,7 +319,7 @@
   <!-- Error Banner -->
   {#if error}
     <div class="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 text-sm text-yellow-400">
-      API 연결 실패: {error} (데모 데이터 표시 중)
+      API 연결 실패: {error}
     </div>
   {/if}
 
