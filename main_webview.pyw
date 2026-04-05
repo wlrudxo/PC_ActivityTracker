@@ -90,7 +90,7 @@ import pystray
 from PIL import Image
 import uvicorn
 
-from backend.api_server import app as fastapi_app, schedule_broadcast, set_runtime_engines, set_exit_callback
+from backend.api_server import app as fastapi_app, schedule_broadcast, set_runtime_engines
 from backend.database import DatabaseManager
 from backend.monitor_engine_thread import MonitorEngineThread
 from backend.rule_engine import RuleEngine
@@ -604,11 +604,6 @@ class ActivityTrackerApp:
             )
             return
         _log_step("API health check (ok)", step_ts)
-
-        # 종료 콜백 설정
-        step_ts = time.perf_counter()
-        set_exit_callback(self.quit_app)
-        _log_step("Exit callback set", step_ts)
 
         # 모니터링 엔진 시작
         step_ts = time.perf_counter()

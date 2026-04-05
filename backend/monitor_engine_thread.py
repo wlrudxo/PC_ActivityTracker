@@ -86,9 +86,6 @@ class MonitorEngineThread(threading.Thread):
         self._last_played_sound_id: Optional[int] = None
         self._last_shown_image_id: Optional[int] = None
 
-        # 프로그램 시작 시 종료되지 않은 활동 정리
-        self.db_manager.cleanup_unfinished_activities()
-
     def _get_polling_interval(self) -> int:
         """폴링 간격 설정 조회 (초)"""
         try:

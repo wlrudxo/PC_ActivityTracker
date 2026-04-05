@@ -38,6 +38,7 @@ _focus_blocker = None
 _log_generator = None
 _monitor_engine = None
 _event_loop = None
+_exit_callback = None
 
 
 def set_runtime_engines(rule_engine, focus_blocker, log_generator=None, monitor_engine=None, exit_callback=None):
@@ -1420,19 +1421,6 @@ async def health_check():
 
 
 # === System ===
-
-# 종료 콜백 (main_webview.py에서 설정)
-_exit_callback = None
-
-
-def set_exit_callback(callback):
-    """종료 콜백 설정"""
-    global _exit_callback
-    _exit_callback = callback
-    print(f"[API] Exit callback set: {callback}")
-
-
-
 
 @app.post("/api/system/exit")
 async def system_exit():
