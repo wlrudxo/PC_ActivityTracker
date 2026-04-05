@@ -61,6 +61,38 @@
   let cropLoading = false;
   let cropSizeFactor = 1;
 
+  function resetPendingSound() {
+    pendingSoundFile = null;
+    pendingSoundDefaultName = '';
+    showSoundNameModal = false;
+  }
+
+  function resetPendingImage() {
+    pendingImageFile = null;
+    pendingImageDefaultName = '';
+    showImageNameModal = false;
+  }
+
+  function resetCropState() {
+    showImageCropModal = false;
+    cropLoading = false;
+    cropImage = null;
+    cropImageSrc = '';
+    cropRect = null;
+    cropBaseSize = null;
+    cropScale = 1;
+    cropDragging = false;
+    cropDragStart = null;
+    cropRectStart = null;
+    cropSizeFactor = 1;
+  }
+
+  function handleModalBackdropClick(event, close) {
+    if (event.target === event.currentTarget) {
+      close();
+    }
+  }
+
   async function loadData() {
     loading = true;
     error = null;
@@ -155,9 +187,8 @@
 
   async function confirmSoundUpload(event) {
     const name = event.detail?.value;
-    showSoundNameModal = false;
     if (!name || !pendingSoundFile) {
-      pendingSoundFile = null;
+      resetPendingSound();
       return;
     }
 
@@ -168,12 +199,11 @@
     } catch (err) {
       toast.error('업로드 실패: ' + err.message);
     }
-    pendingSoundFile = null;
+    resetPendingSound();
   }
 
   function cancelSoundUpload() {
-    showSoundNameModal = false;
-    pendingSoundFile = null;
+    resetPendingSound();
   }
 
   function handleImageFileSelect(event) {
@@ -188,10 +218,8 @@
 
   async function confirmImageUpload(event) {
     const name = event.detail?.value;
-    showImageNameModal = false;
     if (!name || !pendingImageFile) {
-      pendingImageFile = null;
-      pendingImageDefaultName = '';
+      resetPendingImage();
       return;
     }
 
@@ -202,14 +230,11 @@
     } catch (err) {
       toast.error('업로드 실패: ' + err.message);
     }
-    pendingImageFile = null;
-    pendingImageDefaultName = '';
+    resetPendingImage();
   }
 
   function cancelImageUpload() {
-    showImageNameModal = false;
-    pendingImageFile = null;
-    pendingImageDefaultName = '';
+    resetPendingImage();
   }
 
   function openImageCropModal(file) {
@@ -385,11 +410,7 @@
   }
 
   function cancelImageCrop() {
-    showImageCropModal = false;
-    cropLoading = false;
-    cropImage = null;
-    cropImageSrc = '';
-    cropRect = null;
+    resetCropState();
     pendingImageFile = null;
     pendingImageDefaultName = '';
   }
@@ -423,7 +444,7 @@
       }
       const fileName = `${pendingImageDefaultName || 'alert-image'}.png`;
       pendingImageFile = new File([blob], fileName, { type: 'image/png' });
-      showImageCropModal = false;
+      resetCropState();
       showImageNameModal = true;
     }, 'image/png');
   }
@@ -744,8 +765,14 @@
 </div>
 
 {#if showImageCropModal}
-  <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" on:click={cancelImageCrop}>
-    <div class="bg-bg-card rounded-xl p-6 border border-border w-[860px] max-w-[92vw]" on:click|stopPropagation>
+  <div
+    class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+    on:click={(event) => handleModalBackdropClick(event, cancelImageCrop)}
+    on:keydown={(event) => event.key === 'Escape' && cancelImageCrop()}
+    role="dialog"
+    tabindex="-1"
+  >
+    <div class="bg-bg-card rounded-xl p-6 border border-border w-[860px] max-w-[92vw]" role="document">
       <div class="flex items-start justify-between gap-4 mb-4">
         <div>
           <h3 class="text-lg font-semibold text-text-primary">이미지 크롭</h3>
@@ -774,8 +801,9 @@
           ></canvas>
         </div>
         <div class="mt-4">
-          <label class="text-xs text-text-muted block mb-2">크롭 크기</label>
+          <label for="crop-size" class="text-xs text-text-muted block mb-2">크롭 크기</label>
           <input
+            id="crop-size"
             type="range"
             min="0.5"
             max="2.5"
