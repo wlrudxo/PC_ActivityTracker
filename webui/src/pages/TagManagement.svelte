@@ -35,9 +35,6 @@
   let unclassifiedGroups = [];
   let selectedGroups = new Set();
 
-  // Modal backdrop click tracking (드래그 중 모달 닫힘 방지)
-  let backdropMousedown = false;
-
   // Form data
   let tagForm = { name: '', color: '#4CAF50', category: 'other' };
 
@@ -66,6 +63,89 @@
     chrome_profile: '',
     process_path_pattern: ''
   };
+
+  function createEmptyTagForm() {
+    return { name: '', color: '#4CAF50', category: 'other' };
+  }
+
+  function createRulePayload(form) {
+    return {
+      ...form,
+      process_pattern: form.process_pattern || null,
+      url_pattern: form.url_pattern || null,
+      window_title_pattern: form.window_title_pattern || null,
+      chrome_profile: form.chrome_profile || null,
+      process_path_pattern: form.process_path_pattern || null
+    };
+  }
+
+  function createEmptyRuleForm() {
+    return {
+      name: '',
+      tag_id: tags[0]?.id || null,
+      priority: 50,
+      enabled: true,
+      process_pattern: '',
+      url_pattern: '',
+      window_title_pattern: '',
+      chrome_profile: '',
+      process_path_pattern: ''
+    };
+  }
+
+  function closeTagModal() {
+    showTagModal = false;
+    editingTag = null;
+  }
+
+  function closeRuleModal() {
+    showRuleModal = false;
+    editingRule = null;
+  }
+
+  function closeDeleteModal() {
+    showDeleteModal = false;
+    unclassifiedGroups = [];
+    selectedGroups = new Set();
+  }
+
+  function resetDeleteTagState() {
+    showDeleteTagModal = false;
+    pendingDeleteTag = null;
+  }
+
+  function resetDeleteRuleState() {
+    showDeleteRuleModal = false;
+    pendingDeleteRule = null;
+  }
+
+  function getSelectedActivityIds() {
+    const idsToDelete = [];
+    for (const idx of selectedGroups) {
+      idsToDelete.push(...unclassifiedGroups[idx].ids);
+    }
+    return idsToDelete;
+  }
+
+  function handleModalBackdropKeydown(event, close) {
+    if (event.key === 'Escape') {
+      close();
+    }
+  }
+
+  function toggleSelectionFromRow(event, index) {
+    if (event.target instanceof HTMLInputElement) {
+      return;
+    }
+    toggleGroupSelection(index);
+  }
+
+  function handleSelectableRowKeydown(event, index) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      toggleGroupSelection(index);
+    }
+  }
 
   async function loadData() {
     loading = true;
@@ -96,7 +176,7 @@
     editingTag = tag;
     tagForm = tag
       ? { name: tag.name, color: tag.color, category: tag.category || 'other' }
-      : { name: '', color: '#4CAF50', category: 'other' };
+      : createEmptyTagForm();
     showTagModal = true;
   }
 
@@ -107,7 +187,7 @@
       } else {
         await api.createTag(tagForm);
       }
-      showTagModal = false;
+      closeTagModal();
       await loadData();
       toast.success('태그가 저장되었습니다.');
     } catch (err) {
@@ -121,7 +201,6 @@
   }
 
   async function confirmDeleteTag() {
-    showDeleteTagModal = false;
     if (!pendingDeleteTag) return;
 
     try {
@@ -131,12 +210,11 @@
     } catch (err) {
       toast.error('삭제 실패: ' + err.message);
     }
-    pendingDeleteTag = null;
+    resetDeleteTagState();
   }
 
   function cancelDeleteTag() {
-    showDeleteTagModal = false;
-    pendingDeleteTag = null;
+    resetDeleteTagState();
   }
 
   // Rule CRUD
@@ -154,37 +232,20 @@
           chrome_profile: rule.chrome_profile || '',
           process_path_pattern: rule.process_path_pattern || ''
         }
-      : {
-          name: '',
-          tag_id: tags[0]?.id || null,
-          priority: 50,
-          enabled: true,
-          process_pattern: '',
-          url_pattern: '',
-          window_title_pattern: '',
-          chrome_profile: '',
-          process_path_pattern: ''
-        };
+      : createEmptyRuleForm();
     showRuleModal = true;
   }
 
   async function saveRule() {
     try {
-      const data = {
-        ...ruleForm,
-        process_pattern: ruleForm.process_pattern || null,
-        url_pattern: ruleForm.url_pattern || null,
-        window_title_pattern: ruleForm.window_title_pattern || null,
-        chrome_profile: ruleForm.chrome_profile || null,
-        process_path_pattern: ruleForm.process_path_pattern || null
-      };
+      const data = createRulePayload(ruleForm);
 
       if (editingRule) {
         await api.updateRule(editingRule.id, data);
       } else {
         await api.createRule(data);
       }
-      showRuleModal = false;
+      closeRuleModal();
       await loadData();
       toast.success('규칙이 저장되었습니다.');
     } catch (err) {
@@ -198,7 +259,6 @@
   }
 
   async function confirmDeleteRule() {
-    showDeleteRuleModal = false;
     if (!pendingDeleteRule) return;
 
     try {
@@ -208,12 +268,11 @@
     } catch (err) {
       toast.error('삭제 실패: ' + err.message);
     }
-    pendingDeleteRule = null;
+    resetDeleteRuleState();
   }
 
   function cancelDeleteRule() {
-    showDeleteRuleModal = false;
-    pendingDeleteRule = null;
+    resetDeleteRuleState();
   }
 
   async function toggleRule(rule) {
@@ -295,11 +354,7 @@
   }
 
   function deleteSelectedActivities() {
-    const idsToDelete = [];
-    for (const idx of selectedGroups) {
-      idsToDelete.push(...unclassifiedGroups[idx].ids);
-    }
-
+    const idsToDelete = getSelectedActivityIds();
     if (idsToDelete.length === 0) {
       toast.warning('삭제할 항목을 선택하세요.');
       return;
@@ -311,15 +366,12 @@
 
   async function confirmDeleteActivities() {
     showDeleteActivitiesModal = false;
-    const idsToDelete = [];
-    for (const idx of selectedGroups) {
-      idsToDelete.push(...unclassifiedGroups[idx].ids);
-    }
+    const idsToDelete = getSelectedActivityIds();
 
     try {
       await api.deleteActivities(idsToDelete);
       toast.success(`${idsToDelete.length}개의 활동 기록이 삭제되었습니다.`);
-      showDeleteModal = false;
+      closeDeleteModal();
     } catch (err) {
       toast.error('삭제 실패: ' + err.message);
     }
@@ -516,18 +568,24 @@
 <!-- Tag Modal -->
 {#if showTagModal}
   <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-    on:mousedown|self={() => backdropMousedown = true}
-    on:click={() => { if (backdropMousedown) showTagModal = false; backdropMousedown = false; }}
+    on:click|self={closeTagModal}
+    on:keydown={(event) => handleModalBackdropKeydown(event, closeTagModal)}
+    role="dialog"
+    tabindex="-1"
   >
-    <div class="bg-bg-card rounded-xl p-6 w-96 border border-border" on:click|stopPropagation on:mousedown|stopPropagation>
+    <div
+      class="bg-bg-card rounded-xl p-6 w-96 border border-border"
+      role="document"
+    >
       <h3 class="text-lg font-semibold text-text-primary mb-4">
         {editingTag ? '태그 수정' : '태그 추가'}
       </h3>
 
       <div class="space-y-4">
         <div>
-          <label class="block text-sm text-text-secondary mb-1">이름</label>
+          <label for="tag-name" class="block text-sm text-text-secondary mb-1">이름</label>
           <input
+            id="tag-name"
             type="text"
             bind:value={tagForm.name}
             class="w-full px-3 py-2 bg-bg-tertiary border border-border rounded-lg text-text-primary focus:border-accent focus:ring-1 focus:ring-accent outline-none"
@@ -535,7 +593,7 @@
           />
         </div>
         <div>
-          <label class="block text-sm text-text-secondary mb-1">색상</label>
+          <label for="tag-color-picker" class="block text-sm text-text-secondary mb-1">색상</label>
           <div class="grid grid-cols-8 gap-1.5 mb-3">
             {#each colorPresets as preset}
               <button
@@ -549,11 +607,13 @@
           </div>
           <div class="flex items-center gap-3">
             <input
+              id="tag-color-picker"
               type="color"
               bind:value={tagForm.color}
               class="w-12 h-10 rounded border border-border cursor-pointer"
             />
             <input
+              aria-label="색상 코드"
               type="text"
               bind:value={tagForm.color}
               class="flex-1 px-3 py-2 bg-bg-tertiary border border-border rounded-lg text-text-primary font-mono text-sm"
@@ -561,8 +621,9 @@
           </div>
         </div>
         <div>
-          <label class="block text-sm text-text-secondary mb-1">카테고리</label>
+          <label for="tag-category" class="block text-sm text-text-secondary mb-1">카테고리</label>
           <select
+            id="tag-category"
             bind:value={tagForm.category}
             class="w-full px-3 py-2 bg-bg-tertiary border border-border rounded-lg text-text-primary focus:border-accent outline-none"
           >
@@ -577,7 +638,7 @@
       <div class="flex justify-end gap-3 mt-6">
         <button
           class="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors"
-          on:click={() => showTagModal = false}
+          on:click={closeTagModal}
         >
           취소
         </button>
@@ -595,10 +656,15 @@
 <!-- Rule Modal -->
 {#if showRuleModal}
   <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-    on:mousedown|self={() => backdropMousedown = true}
-    on:click={() => { if (backdropMousedown) showRuleModal = false; backdropMousedown = false; }}
+    on:click|self={closeRuleModal}
+    on:keydown={(event) => handleModalBackdropKeydown(event, closeRuleModal)}
+    role="dialog"
+    tabindex="-1"
   >
-    <div class="bg-bg-card rounded-xl p-6 w-[500px] border border-border" on:click|stopPropagation on:mousedown|stopPropagation>
+    <div
+      class="bg-bg-card rounded-xl p-6 w-[500px] border border-border"
+      role="document"
+    >
       <h3 class="text-lg font-semibold text-text-primary mb-4">
         {editingRule ? '규칙 수정' : '규칙 추가'}
       </h3>
@@ -606,8 +672,9 @@
       <div class="space-y-4">
         <div class="grid grid-cols-2 gap-4">
           <div>
-            <label class="block text-sm text-text-secondary mb-1">이름</label>
+            <label for="rule-name" class="block text-sm text-text-secondary mb-1">이름</label>
             <input
+              id="rule-name"
               type="text"
               bind:value={ruleForm.name}
               class="w-full px-3 py-2 bg-bg-tertiary border border-border rounded-lg text-text-primary focus:border-accent outline-none"
@@ -615,8 +682,9 @@
             />
           </div>
           <div>
-            <label class="block text-sm text-text-secondary mb-1">태그</label>
+            <label for="rule-tag" class="block text-sm text-text-secondary mb-1">태그</label>
             <select
+              id="rule-tag"
               bind:value={ruleForm.tag_id}
               class="w-full px-3 py-2 bg-bg-tertiary border border-border rounded-lg text-text-primary focus:border-accent outline-none"
             >
@@ -629,8 +697,9 @@
 
         <div class="grid grid-cols-2 gap-4">
           <div>
-            <label class="block text-sm text-text-secondary mb-1">우선순위</label>
+            <label for="rule-priority" class="block text-sm text-text-secondary mb-1">우선순위</label>
             <input
+              id="rule-priority"
               type="number"
               bind:value={ruleForm.priority}
               min="0"
@@ -647,8 +716,9 @@
         </div>
 
         <div>
-          <label class="block text-sm text-text-secondary mb-1">프로세스 패턴</label>
+          <label for="rule-process-pattern" class="block text-sm text-text-secondary mb-1">프로세스 패턴</label>
           <input
+            id="rule-process-pattern"
             type="text"
             bind:value={ruleForm.process_pattern}
             class="w-full px-3 py-2 bg-bg-tertiary border border-border rounded-lg text-text-primary font-mono text-sm focus:border-accent outline-none"
@@ -657,8 +727,9 @@
         </div>
 
         <div>
-          <label class="block text-sm text-text-secondary mb-1">URL 패턴</label>
+          <label for="rule-url-pattern" class="block text-sm text-text-secondary mb-1">URL 패턴</label>
           <input
+            id="rule-url-pattern"
             type="text"
             bind:value={ruleForm.url_pattern}
             class="w-full px-3 py-2 bg-bg-tertiary border border-border rounded-lg text-text-primary font-mono text-sm focus:border-accent outline-none"
@@ -667,8 +738,9 @@
         </div>
 
         <div>
-          <label class="block text-sm text-text-secondary mb-1">창 제목 패턴</label>
+          <label for="rule-window-title-pattern" class="block text-sm text-text-secondary mb-1">창 제목 패턴</label>
           <input
+            id="rule-window-title-pattern"
             type="text"
             bind:value={ruleForm.window_title_pattern}
             class="w-full px-3 py-2 bg-bg-tertiary border border-border rounded-lg text-text-primary font-mono text-sm focus:border-accent outline-none"
@@ -677,8 +749,9 @@
         </div>
 
         <div>
-          <label class="block text-sm text-text-secondary mb-1">Chrome 프로필</label>
+          <label for="rule-chrome-profile" class="block text-sm text-text-secondary mb-1">Chrome 프로필</label>
           <input
+            id="rule-chrome-profile"
             type="text"
             bind:value={ruleForm.chrome_profile}
             class="w-full px-3 py-2 bg-bg-tertiary border border-border rounded-lg text-text-primary font-mono text-sm focus:border-accent outline-none"
@@ -687,8 +760,9 @@
         </div>
 
         <div>
-          <label class="block text-sm text-text-secondary mb-1">프로세스 경로 패턴</label>
+          <label for="rule-process-path-pattern" class="block text-sm text-text-secondary mb-1">프로세스 경로 패턴</label>
           <input
+            id="rule-process-path-pattern"
             type="text"
             bind:value={ruleForm.process_path_pattern}
             class="w-full px-3 py-2 bg-bg-tertiary border border-border rounded-lg text-text-primary font-mono text-sm focus:border-accent outline-none"
@@ -700,7 +774,7 @@
       <div class="flex justify-end gap-3 mt-6">
         <button
           class="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors"
-          on:click={() => showRuleModal = false}
+          on:click={closeRuleModal}
         >
           취소
         </button>
@@ -718,10 +792,15 @@
 <!-- Delete Unclassified Modal -->
 {#if showDeleteModal}
   <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-    on:mousedown|self={() => backdropMousedown = true}
-    on:click={() => { if (backdropMousedown) showDeleteModal = false; backdropMousedown = false; }}
+    on:click|self={closeDeleteModal}
+    on:keydown={(event) => handleModalBackdropKeydown(event, closeDeleteModal)}
+    role="dialog"
+    tabindex="-1"
   >
-    <div class="bg-bg-card rounded-xl p-6 w-[800px] max-h-[80vh] border border-border flex flex-col" on:click|stopPropagation on:mousedown|stopPropagation>
+    <div
+      class="bg-bg-card rounded-xl p-6 w-[800px] max-h-[80vh] border border-border flex flex-col"
+      role="document"
+    >
       <h3 class="text-lg font-semibold text-text-primary mb-4">
         미분류 항목 삭제 ({unclassifiedGroups.reduce((sum, g) => sum + g.count, 0)}개)
       </h3>
@@ -754,11 +833,17 @@
           </thead>
           <tbody class="divide-y divide-border">
             {#each unclassifiedGroups as group, index}
-              <tr class="hover:bg-bg-hover transition-colors cursor-pointer" on:click={() => toggleGroupSelection(index)}>
+              <tr
+                class="hover:bg-bg-hover transition-colors cursor-pointer"
+                on:click={(event) => toggleSelectionFromRow(event, index)}
+                on:keydown={(event) => handleSelectableRowKeydown(event, index)}
+                tabindex="0"
+              >
                 <td class="px-3 py-2">
                   <input
                     type="checkbox"
                     checked={selectedGroups.has(index)}
+                    on:change={() => toggleGroupSelection(index)}
                     class="w-4 h-4 rounded border-border bg-bg-tertiary text-accent"
                   />
                 </td>
@@ -783,7 +868,7 @@
         <div class="flex gap-3">
           <button
             class="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors"
-            on:click={() => showDeleteModal = false}
+            on:click={closeDeleteModal}
           >
             취소
           </button>
