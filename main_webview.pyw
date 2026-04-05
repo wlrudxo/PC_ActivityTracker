@@ -8,14 +8,12 @@ import sys
 import os
 import shutil
 import sqlite3
-import urllib.request
 import urllib.error
 import threading
 import time
 import signal
 import webbrowser
 import socket
-import signal
 import ctypes
 import logging
 import tempfile
@@ -88,14 +86,10 @@ except ImportError as e:
 
 import pystray
 from PIL import Image
-import uvicorn
 
-from backend.api_server import app as fastapi_app, schedule_broadcast, set_runtime_engines
-from backend.database import DatabaseManager
-from backend.monitor_engine_thread import MonitorEngineThread
-from backend.rule_engine import RuleEngine
+from backend.api_server import app as fastapi_app, schedule_broadcast
+from backend.app_runtime import RuntimeCoordinator
 from backend.config import AppConfig
-from backend.log_generator import ActivityLogGenerator
 from backend.focus_time import is_in_block_time
 
 # Silence pywebview error spam (native object introspection).
@@ -114,53 +108,6 @@ _pywebview_noise = [
 sys.stdout = _StreamFilter(sys.stdout, _pywebview_noise)
 sys.stderr = _StreamFilter(sys.stderr, _pywebview_noise)
 from backend.import_export import ImportExportManager
-
-
-class ApiServerThread(threading.Thread):
-    """FastAPI 서버를 스레드로 실행 (메인 프로세스 공유)"""
-
-    def __init__(self, app, port: int):
-        super().__init__(daemon=True)
-        self._app = app
-        self._port = port
-        self._server = None
-
-    def run(self):
-        from logging.handlers import RotatingFileHandler
-        from backend.config import AppConfig
-
-        log_path = AppConfig.get_log_path().with_name("api.log")
-        handler = RotatingFileHandler(
-            str(log_path),
-            maxBytes=5 * 1024 * 1024,  # 5MB
-            backupCount=3,
-            encoding="utf-8"
-        )
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-        for logger_name in ("uvicorn.error", "uvicorn.access", "fastapi"):
-            logger = logging.getLogger(logger_name)
-            logger.setLevel(logging.INFO)
-            if not any(
-                isinstance(existing, RotatingFileHandler) and existing.baseFilename == handler.baseFilename
-                for existing in logger.handlers
-            ):
-                logger.addHandler(handler)
-
-        config = uvicorn.Config(
-            self._app,
-            host="127.0.0.1",
-            port=self._port,
-            log_level="warning",
-            access_log=False
-        )
-        if hasattr(config, "handle_signals"):
-            config.handle_signals = False
-        self._server = uvicorn.Server(config)
-        self._server.run()
-
-    def stop(self):
-        if self._server:
-            self._server.should_exit = True
 
 
 class PyWebViewApi:
@@ -262,12 +209,7 @@ class ActivityTrackerApp:
     def __init__(self):
         self.window = None
         self.tray_icon = None
-        self.api_server_thread = None
         self._api_pid_path = AppConfig.get_api_pid_path()
-        self.monitor_engine = None
-        self.db_manager = None
-        self.rule_engine = None
-        self.log_generator = None
         self.running = True
         self._webview_loaded = threading.Event()
 
@@ -275,6 +217,29 @@ class ActivityTrackerApp:
         self.api_port = 8000
         self.webui_url = self._get_webui_url()
         self._webview_profile_dir = AppConfig.get_app_dir() / "webview_profile"
+        self.runtime = RuntimeCoordinator(
+            fastapi_app=fastapi_app,
+            api_port=self.api_port,
+            exit_callback=self.quit_app,
+            on_activity_detected=self._on_activity_detected,
+            on_toast_requested=self._on_toast_requested,
+        )
+
+    @property
+    def api_server_thread(self):
+        return self.runtime.api_server_thread
+
+    @property
+    def monitor_engine(self):
+        return self.runtime.monitor_engine
+
+    @property
+    def db_manager(self):
+        return self.runtime.db_manager
+
+    @property
+    def log_generator(self):
+        return self.runtime.log_generator
 
     def _get_webui_url(self) -> str:
         """웹 UI URL 결정"""
@@ -287,59 +252,11 @@ class ActivityTrackerApp:
 
     def start_api_server(self):
         """FastAPI 서버를 스레드로 실행"""
-        logging.info("[API Server] Starting...")
-        self.api_server_thread = ApiServerThread(fastapi_app, self.api_port)
-        self.api_server_thread.start()
-        print(f"[API Server] Started on port {self.api_port}")
+        self.runtime.start_api_server()
 
     def start_monitor_engine(self):
         """모니터링 엔진 시작"""
-        self.db_manager = DatabaseManager()
-        self.db_manager.cleanup_unfinished_activities()
-
-        # 룰 엔진 초기화
-        self.rule_engine = RuleEngine(self.db_manager)
-
-        # 로그 생성기 초기화 (monitor_engine보다 먼저)
-        self.log_generator = ActivityLogGenerator(self.db_manager)
-
-        # 모니터링 엔진 초기화 (threading 기반)
-        self.monitor_engine = MonitorEngineThread(
-            db_manager=self.db_manager,
-            rule_engine=self.rule_engine,
-            on_activity_detected=self._on_activity_detected,
-            on_toast_requested=self._on_toast_requested,
-            log_generator=self.log_generator
-        )
-
-        # 모니터링 시작
-        self.monitor_engine.start()
-        print("[Monitor Engine] Started (threading-based)")
-
-        # API 서버에 런타임 엔진 인스턴스 전달 (룰/집중 설정 변경 시 reload 용)
-        set_runtime_engines(
-            self.rule_engine,
-            self.monitor_engine.focus_blocker,
-            self.log_generator,
-            self.monitor_engine,
-            self.quit_app  # exit callback도 함께 전달
-        )
-
-        # 로그 생성 (백그라운드)
-        self._start_log_generator()
-        # 초기화에서 열었던 메인 스레드 DB 연결을 닫아 잠금 최소화
-        self.db_manager.close()
-
-    def _start_log_generator(self):
-        """활동 로그 생성 (백그라운드)"""
-        def generate_logs():
-            try:
-                self.log_generator.update_all_logs()
-                print("[Log Generator] Logs generated successfully")
-            except Exception as e:
-                print(f"[Log Generator] Error: {e}")
-
-        threading.Thread(target=generate_logs, daemon=True).start()
+        self.runtime.start_monitoring()
 
     def _check_dist_timestamp(self) -> tuple[str, str]:
         """dist 폴더 타임스탬프 확인"""
@@ -358,39 +275,7 @@ class ActivityTrackerApp:
 
     def _wait_for_api_ready(self, timeout: float = 10.0) -> bool:
         """API 서버 준비 대기"""
-        import json
-        deadline = time.time() + timeout
-        url = f"http://127.0.0.1:{self.api_port}/api/health"
-        last_error = None
-        while time.time() < deadline:
-            try:
-                with urllib.request.urlopen(url, timeout=1) as resp:
-                    if resp.status == 200:
-                        data = json.loads(resp.read().decode())
-                        api_version = data.get("api_version", "unknown")
-
-                        # dist 타임스탬프 확인
-                        dist_status, build_time = self._check_dist_timestamp()
-
-                        print(f"[Version Check] API: v{api_version}, dist: {dist_status}")
-                        if build_time:
-                            print(f"[Version Check] WebUI build time: {build_time}")
-
-                        if dist_status == "NOT_FOUND":
-                            print("[Warning] webui/dist not found! Run 'npm run build' in webui folder.")
-                            logging.warning("[WebUI] dist not found. Run 'npm run build' in webui folder.")
-                        elif dist_status == "NO_INDEX":
-                            print("[Warning] webui/dist/index.html not found!")
-                            logging.warning("[WebUI] dist/index.html not found.")
-
-                        logging.info(f"[API Server] Health check OK - API v{api_version}, dist {dist_status}")
-                        return True
-            except Exception as e:
-                last_error = e
-                time.sleep(0.5)
-        if last_error:
-            logging.error("[API Server] Health check failed: %s", last_error)
-        return False
+        return self.runtime.wait_for_api_ready(self._check_dist_timestamp, timeout=timeout)
 
     def _on_activity_detected(self, activity_info: dict):
         """활동 감지 시 WebSocket으로 브로드캐스트"""
@@ -505,13 +390,6 @@ class ActivityTrackerApp:
         self.running = False
 
         try:
-            if self.monitor_engine and self.monitor_engine.is_alive():
-                print("[App] Stopping monitor engine...")
-                self.monitor_engine.stop(timeout=3.0)
-        except Exception as e:
-            print(f"[App] Monitor engine stop error: {e}")
-
-        try:
             if self.tray_icon:
                 self.tray_icon.stop()
         except Exception as e:
@@ -523,18 +401,7 @@ class ActivityTrackerApp:
         except Exception as e:
             print(f"[App] Window destroy error: {e}")
 
-        try:
-            if self.api_server_thread and self.api_server_thread.is_alive():
-                self.api_server_thread.stop()
-                if threading.current_thread() is not self.api_server_thread:
-                    self.api_server_thread.join(timeout=3.0)
-        except Exception as e:
-            print(f"[App] API server stop error: {e}")
-        try:
-            if self._api_pid_path.exists():
-                self._api_pid_path.unlink()
-        except Exception as e:
-            print(f"[App] API pid cleanup error: {e}")
+        self.runtime.stop(self._api_pid_path)
 
         print("[App] Shutting down...")
         os._exit(0)
@@ -593,9 +460,7 @@ class ActivityTrackerApp:
         if not self._wait_for_api_ready(timeout=12.0):
             _log_step("API health check (failed)", step_ts)
             logging.error("[API Server] Health check failed")
-            if self.api_server_thread and self.api_server_thread.is_alive():
-                self.api_server_thread.stop()
-                self.api_server_thread.join(timeout=3.0)
+            self.runtime.stop(self._api_pid_path)
             ctypes.windll.user32.MessageBoxW(
                 0,
                 "API server did not respond. Please restart the app.",
