@@ -37,8 +37,6 @@
   >
     <div
       class="bg-bg-card rounded-xl w-[500px] max-w-[90vw] max-h-[80vh] border border-border flex flex-col"
-      on:click|stopPropagation
-      on:keydown|stopPropagation
       role="document"
     >
       <!-- Header -->

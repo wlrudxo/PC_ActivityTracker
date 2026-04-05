@@ -122,6 +122,12 @@
     emergencyReason = '';
   }
 
+  function handleModalBackdropClick(event, close) {
+    if (event.target === event.currentTarget) {
+      close();
+    }
+  }
+
   function resolveAppIconSrc() {
     if (typeof window === 'undefined') return '';
     if (window.location.protocol === 'file:') {
@@ -732,15 +738,13 @@
 {#if showRulesImportModal}
   <div
     class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-    on:click={cancelRulesImport}
+    on:click={(event) => handleModalBackdropClick(event, cancelRulesImport)}
     on:keydown={(e) => e.key === 'Escape' && cancelRulesImport()}
     role="dialog"
     tabindex="-1"
   >
     <div
       class="bg-bg-card rounded-xl p-6 w-96 border border-border"
-      on:click|stopPropagation
-      on:keydown|stopPropagation
       role="document"
     >
       <h3 class="text-lg font-semibold text-text-primary mb-4">룰 가져오기</h3>
@@ -837,15 +841,13 @@
 {#if showEmergencyModal}
   <div
     class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-    on:click={cancelEmergencyReset}
+    on:click={(event) => handleModalBackdropClick(event, cancelEmergencyReset)}
     on:keydown={(e) => e.key === 'Escape' && cancelEmergencyReset()}
     role="dialog"
     tabindex="-1"
   >
     <div
       class="bg-bg-card rounded-xl p-6 w-[28rem] border border-red-500/30"
-      on:click|stopPropagation
-      on:keydown|stopPropagation
       role="document"
     >
       <h3 class="text-lg font-semibold text-red-400 mb-4">집중 모드 긴급 해제</h3>
