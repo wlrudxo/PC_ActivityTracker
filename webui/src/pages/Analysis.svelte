@@ -137,56 +137,19 @@
     } catch (err) {
       console.error('Failed to load period data:', err);
       error = err.message;
-      loadDemoData();
+      resetPeriodData();
+      updateCharts();
     } finally {
       loading = false;
     }
   }
 
-  function loadDemoData() {
-    const days = getDaysBetween(startDate, endDate);
-
-    periodStats = {
-      totalSeconds: 7 * 6 * 3600,  // 7일 * 6시간
-      daysCount: days,
-      goalAchievedDays: 4
-    };
-
-    dailyTrend = Array.from({ length: days }, (_, i) => {
-      const date = new Date(startDate);
-      date.setDate(date.getDate() + i);
-      return {
-        date: formatLocalDate(date),
-        tags: [
-          { tag_name: '업무', tag_color: '#4CAF50', category: 'work', seconds: 18000 + Math.random() * 7200 },
-          { tag_name: '휴식', tag_color: '#FF5722', category: 'non_work', seconds: 3600 + Math.random() * 3600 }
-        ]
-      };
-    });
-
-    tagStats = [
-      { id: 1, name: '업무', color: '#4CAF50', category: 'work', duration: 126000, percentage: '70.0' },
-      { id: 2, name: '휴식', color: '#FF5722', category: 'non_work', duration: 36000, percentage: '20.0' },
-      { id: 3, name: '미분류', color: '#607D8B', category: 'other', duration: 18000, percentage: '10.0' }
-    ];
-
-    processStats = [
-      { name: 'chrome.exe', duration: 72000 },
-      { name: 'Code.exe', duration: 54000 },
-      { name: 'explorer.exe', duration: 18000 },
-      { name: 'Discord.exe', duration: 14400 },
-      { name: 'Slack.exe', duration: 10800 }
-    ];
-
-    websiteStats = [
-      { domain: 'github.com', duration: 28800 },
-      { domain: 'stackoverflow.com', duration: 14400 },
-      { domain: 'youtube.com', duration: 10800 },
-      { domain: 'google.com', duration: 7200 },
-      { domain: 'notion.so', duration: 5400 }
-    ];
-
-    updateCharts();
+  function resetPeriodData() {
+    periodStats = null;
+    dailyTrend = [];
+    tagStats = [];
+    processStats = [];
+    websiteStats = [];
   }
 
   function getDaysBetween(start, end) {
@@ -474,7 +437,7 @@
   <!-- Error Banner -->
   {#if error}
     <div class="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 text-sm text-yellow-400">
-      API 연결 실패: {error} (데모 데이터 표시 중)
+      API 연결 실패: {error}
     </div>
   {/if}
 
