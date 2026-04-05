@@ -40,6 +40,29 @@ _monitor_engine = None
 _event_loop = None
 _exit_callback = None
 
+GENERAL_SETTINGS_KEYS = [
+    'alert_toast_enabled',
+    'alert_sound_enabled',
+    'alert_sound_mode',
+    'alert_image_enabled',
+    'alert_image_mode',
+    'log_retention_days',
+    'polling_interval',
+    'idle_threshold',
+    'target_daily_hours',
+    'target_distraction_ratio',
+]
+
+ALERT_SETTING_SPECS = {
+    'toast_enabled': ('alert_toast_enabled', lambda value: '1' if value else '0'),
+    'sound_enabled': ('alert_sound_enabled', lambda value: '1' if value else '0'),
+    'sound_mode': ('alert_sound_mode', str),
+    'sound_selected': ('alert_sound_selected', lambda value: str(value)),
+    'image_enabled': ('alert_image_enabled', lambda value: '1' if value else '0'),
+    'image_mode': ('alert_image_mode', str),
+    'image_selected': ('alert_image_selected', lambda value: str(value)),
+}
+
 
 def set_runtime_engines(rule_engine, focus_blocker, log_generator=None, monitor_engine=None, exit_callback=None):
     """런타임 엔진 인스턴스 설정 (main_webview.py에서 호출)"""
@@ -82,6 +105,63 @@ def _regenerate_logs():
             finally:
                 _log_generator.db.close()
         threading.Thread(target=generate, daemon=True).start()
+
+
+def _apply_runtime_updates(*, rules: bool = False, focus: bool = False, logs: bool = False):
+    """변경된 설정에 맞춰 런타임 구성요소를 반영."""
+    if rules:
+        _reload_rule_engine()
+    if focus:
+        _reload_focus_blocker()
+    if logs:
+        _regenerate_logs()
+
+
+def _get_settings_map(db: DatabaseManager, keys: list[str]) -> dict[str, Optional[str]]:
+    """지정한 설정 키들을 일괄 조회."""
+    return {key: db.get_setting(key) for key in keys}
+
+
+def _set_settings_map(db: DatabaseManager, values: dict[str, Any]):
+    """설정 값을 일괄 저장."""
+    for key, value in values.items():
+        db.set_setting(key, str(value) if value is not None else None)
+
+
+def _require_tag(db: DatabaseManager, tag_id: int) -> dict:
+    """태그 존재 검증."""
+    tag = db.get_tag_by_id(tag_id)
+    if not tag:
+        raise HTTPException(404, "Tag not found")
+    return tag
+
+
+def _require_rule(db: DatabaseManager, rule_id: int) -> dict:
+    """룰 존재 검증."""
+    rule = db.get_rule_by_id(rule_id)
+    if not rule:
+        raise HTTPException(404, "Rule not found")
+    return rule
+
+
+def _get_alert_settings_payload(db: DatabaseManager) -> dict[str, Any]:
+    """전역 알림 설정 응답 직렬화."""
+    return {
+        "toast_enabled": db.get_setting('alert_toast_enabled', '1') == '1',
+        "sound_enabled": db.get_setting('alert_sound_enabled', '0') == '1',
+        "sound_mode": db.get_setting('alert_sound_mode', 'single'),
+        "sound_selected": int(db.get_setting('alert_sound_selected', '0') or 0),
+        "image_enabled": db.get_setting('alert_image_enabled', '0') == '1',
+        "image_mode": db.get_setting('alert_image_mode', 'single'),
+        "image_selected": int(db.get_setting('alert_image_selected', '0') or 0)
+    }
+
+
+def _apply_alert_settings_update(db: DatabaseManager, update_data: dict[str, Any]):
+    """전역 알림 설정 저장."""
+    for input_key, (setting_key, serializer) in ALERT_SETTING_SPECS.items():
+        if input_key in update_data:
+            db.set_setting(setting_key, serializer(update_data[input_key]))
 
 
 # === Pydantic Models ===
@@ -511,7 +591,7 @@ async def create_tag(tag: TagCreate):
     """태그 생성"""
     db = get_db()
     tag_id = db.create_tag(tag.name, tag.color, tag.category or 'other')
-    _reload_rule_engine()
+    _apply_runtime_updates(rules=True)
     return {"id": tag_id, "message": "Tag created"}
 
 
@@ -519,15 +599,12 @@ async def create_tag(tag: TagCreate):
 async def update_tag(tag_id: int, tag: TagUpdate):
     """태그 수정"""
     db = get_db()
-
-    existing = db.get_tag_by_id(tag_id)
-    if not existing:
-        raise HTTPException(404, "Tag not found")
+    _require_tag(db, tag_id)
 
     update_data = tag.model_dump(exclude_unset=True)
     if update_data:
         db.update_tag(tag_id, **update_data)
-        _reload_rule_engine()
+        _apply_runtime_updates(rules=True)
 
     return {"message": "Tag updated"}
 
@@ -536,13 +613,9 @@ async def update_tag(tag_id: int, tag: TagUpdate):
 async def delete_tag(tag_id: int):
     """태그 삭제"""
     db = get_db()
-
-    existing = db.get_tag_by_id(tag_id)
-    if not existing:
-        raise HTTPException(404, "Tag not found")
-
+    _require_tag(db, tag_id)
     db.delete_tag(tag_id)
-    _reload_rule_engine()
+    _apply_runtime_updates(rules=True)
     return {"message": "Tag deleted"}
 
 
@@ -561,7 +634,7 @@ async def create_rule(rule: RuleCreate):
     """룰 생성"""
     db = get_db()
     rule_id = db.create_rule(**rule.model_dump())
-    _reload_rule_engine()
+    _apply_runtime_updates(rules=True)
     return {"id": rule_id, "message": "Rule created"}
 
 
@@ -569,15 +642,12 @@ async def create_rule(rule: RuleCreate):
 async def update_rule(rule_id: int, rule: RuleUpdate):
     """룰 수정"""
     db = get_db()
-
-    existing = db.get_rule_by_id(rule_id)
-    if not existing:
-        raise HTTPException(404, "Rule not found")
+    _require_rule(db, rule_id)
 
     update_data = rule.model_dump(exclude_unset=True)
     if update_data:
         db.update_rule(rule_id, **update_data)
-        _reload_rule_engine()
+        _apply_runtime_updates(rules=True)
 
     return {"message": "Rule updated"}
 
@@ -586,13 +656,9 @@ async def update_rule(rule_id: int, rule: RuleUpdate):
 async def delete_rule(rule_id: int):
     """룰 삭제"""
     db = get_db()
-
-    existing = db.get_rule_by_id(rule_id)
-    if not existing:
-        raise HTTPException(404, "Rule not found")
-
+    _require_rule(db, rule_id)
     db.delete_rule(rule_id)
-    _reload_rule_engine()
+    _apply_runtime_updates(rules=True)
     return {"message": "Rule deleted"}
 
 
@@ -723,26 +789,7 @@ async def delete_activities(data: ActivityDeleteRequest):
 async def get_settings():
     """모든 설정 조회"""
     db = get_db()
-
-    settings_keys = [
-        'alert_toast_enabled',
-        'alert_sound_enabled',
-        'alert_sound_mode',
-        'alert_image_enabled',
-        'alert_image_mode',
-        'log_retention_days',
-        'polling_interval',
-        'idle_threshold',
-        'target_daily_hours',
-        'target_distraction_ratio'
-    ]
-
-    settings = {}
-    for key in settings_keys:
-        value = db.get_setting(key)
-        settings[key] = value
-
-    return {"settings": settings}
+    return {"settings": _get_settings_map(db, GENERAL_SETTINGS_KEYS)}
 
 
 @app.put("/api/settings")
@@ -752,14 +799,12 @@ async def update_settings(data: SettingsUpdate):
 
     # 기존 log_retention_days 값 확인
     old_retention = db.get_setting('log_retention_days')
-
-    for key, value in data.settings.items():
-        db.set_setting(key, str(value) if value is not None else None)
+    _set_settings_map(db, data.settings)
 
     # log_retention_days가 변경되면 로그 재생성
     new_retention = data.settings.get('log_retention_days')
     if new_retention and str(new_retention) != str(old_retention):
-        _regenerate_logs()
+        _apply_runtime_updates(logs=True)
 
     return {"message": "Settings updated"}
 
@@ -844,8 +889,7 @@ async def emergency_reset_focus(data: EmergencyResetRequest):
             db.update_tag(tag['id'], block_enabled=False)
             reset_tags.append(tag['name'])
 
-    # FocusBlocker 새로고침
-    _reload_focus_blocker()
+    _apply_runtime_updates(focus=True)
 
     # 로그 기록
     if _log_generator and reset_tags:
@@ -866,9 +910,7 @@ async def update_focus_settings(tag_id: int, data: TagUpdate):
     """집중 모드 설정 수정"""
     db = get_db()
 
-    existing = db.get_tag_by_id(tag_id)
-    if not existing:
-        raise HTTPException(404, "Tag not found")
+    existing = _require_tag(db, tag_id)
 
     # 차단 활성 시간대에는 수정 불가 체크
     if existing.get('block_enabled'):
@@ -890,7 +932,7 @@ async def update_focus_settings(tag_id: int, data: TagUpdate):
         update_data.setdefault("block_end_time", end_time)
     if update_data:
         db.update_tag(tag_id, **update_data)
-        _reload_focus_blocker()
+        _apply_runtime_updates(focus=True)
 
     return {"message": "Focus settings updated"}
 
@@ -919,15 +961,7 @@ class TagAlertUpdate(BaseModel):
 async def get_alert_settings():
     """전역 알림 설정 조회"""
     db = get_db()
-    return {
-        "toast_enabled": db.get_setting('alert_toast_enabled', '1') == '1',
-        "sound_enabled": db.get_setting('alert_sound_enabled', '0') == '1',
-        "sound_mode": db.get_setting('alert_sound_mode', 'single'),
-        "sound_selected": int(db.get_setting('alert_sound_selected', '0') or 0),
-        "image_enabled": db.get_setting('alert_image_enabled', '0') == '1',
-        "image_mode": db.get_setting('alert_image_mode', 'single'),
-        "image_selected": int(db.get_setting('alert_image_selected', '0') or 0)
-    }
+    return _get_alert_settings_payload(db)
 
 
 @app.put("/api/alerts/settings")
@@ -935,22 +969,7 @@ async def update_alert_settings(data: AlertSettingsUpdate):
     """전역 알림 설정 수정"""
     db = get_db()
     update_data = data.model_dump(exclude_unset=True)
-
-    if 'toast_enabled' in update_data:
-        db.set_setting('alert_toast_enabled', '1' if update_data['toast_enabled'] else '0')
-    if 'sound_enabled' in update_data:
-        db.set_setting('alert_sound_enabled', '1' if update_data['sound_enabled'] else '0')
-    if 'sound_mode' in update_data:
-        db.set_setting('alert_sound_mode', update_data['sound_mode'])
-    if 'sound_selected' in update_data:
-        db.set_setting('alert_sound_selected', str(update_data['sound_selected']))
-    if 'image_enabled' in update_data:
-        db.set_setting('alert_image_enabled', '1' if update_data['image_enabled'] else '0')
-    if 'image_mode' in update_data:
-        db.set_setting('alert_image_mode', update_data['image_mode'])
-    if 'image_selected' in update_data:
-        db.set_setting('alert_image_selected', str(update_data['image_selected']))
-
+    _apply_alert_settings_update(db, update_data)
     return {"message": "Alert settings updated"}
 
 
@@ -1387,7 +1406,7 @@ async def import_rules(
     if not success:
         raise HTTPException(500, result_message)
 
-    _reload_rule_engine()
+    _apply_runtime_updates(rules=True)
 
     return {
         "message": result_message,
