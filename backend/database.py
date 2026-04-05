@@ -47,7 +47,18 @@ class DatabaseManager:
     def init_database(self):
         """테이블 생성 및 기본 데이터 삽입"""
         cursor = self.conn.cursor()
+        self._create_core_tables(cursor)
+        self._apply_schema_migrations(cursor)
+        self._mark_existing_installations(cursor)
+        self._create_supporting_tables(cursor)
+        self._seed_system_tags_and_rules(cursor)
+        self._seed_default_rules(cursor)
+        self._reconcile_alert_assets()
+        self._seed_alert_assets()
+        self.conn.commit()
 
+    def _create_core_tables(self, cursor):
+        """핵심 테이블과 인덱스 생성"""
         # tags 테이블
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS tags (
@@ -96,14 +107,6 @@ class DatabaseManager:
             ON activities(process_name)
         """)
 
-        # 기존 테이블에 process_path 컬럼 추가 (마이그레이션)
-        try:
-            cursor.execute("ALTER TABLE activities ADD COLUMN process_path TEXT")
-            self.conn.commit()
-        except Exception:
-            # 이미 컬럼이 존재하면 무시
-            pass
-
         # rules 테이블
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS rules (
@@ -127,55 +130,6 @@ class DatabaseManager:
             )
         """)
 
-        # 기존 테이블에 process_path_pattern 컬럼 추가 (마이그레이션)
-        try:
-            cursor.execute("ALTER TABLE rules ADD COLUMN process_path_pattern TEXT")
-            self.conn.commit()
-        except Exception:
-            # 이미 컬럼이 존재하면 무시
-            pass
-
-        # 태그 알림 기능 컬럼 추가 (마이그레이션)
-        try:
-            cursor.execute("ALTER TABLE tags ADD COLUMN alert_enabled BOOLEAN DEFAULT 0")
-            self.conn.commit()
-        except Exception:
-            pass
-        try:
-            cursor.execute("ALTER TABLE tags ADD COLUMN alert_message TEXT")
-            self.conn.commit()
-        except Exception:
-            pass
-        try:
-            cursor.execute("ALTER TABLE tags ADD COLUMN alert_cooldown INTEGER DEFAULT 30")
-            self.conn.commit()
-        except Exception:
-            pass
-
-        # 태그 차단(집중 모드) 컬럼 추가 (마이그레이션)
-        try:
-            cursor.execute("ALTER TABLE tags ADD COLUMN block_enabled BOOLEAN DEFAULT 0")
-            self.conn.commit()
-        except Exception:
-            pass
-        try:
-            cursor.execute("ALTER TABLE tags ADD COLUMN block_start_time TEXT")
-            self.conn.commit()
-        except Exception:
-            pass
-        try:
-            cursor.execute("ALTER TABLE tags ADD COLUMN block_end_time TEXT")
-            self.conn.commit()
-        except Exception:
-            pass
-
-        # 태그 카테고리 컬럼 추가 (마이그레이션): 'work', 'non_work', 'other'
-        try:
-            cursor.execute("ALTER TABLE tags ADD COLUMN category TEXT DEFAULT 'other'")
-            self.conn.commit()
-        except Exception:
-            pass
-
         # settings 테이블 (전역 설정)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS settings (
@@ -184,7 +138,28 @@ class DatabaseManager:
             )
         """)
 
-        # 마이그레이션: 기존 사용자는 이미 태그/룰을 커스텀했으므로 seeded 처리
+    def _apply_migration(self, cursor, sql: str):
+        """단일 ALTER TABLE 마이그레이션 적용."""
+        try:
+            cursor.execute(sql)
+            self.conn.commit()
+        except Exception:
+            pass
+
+    def _apply_schema_migrations(self, cursor):
+        """기존 설치본을 최신 스키마로 맞춤."""
+        self._apply_migration(cursor, "ALTER TABLE activities ADD COLUMN process_path TEXT")
+        self._apply_migration(cursor, "ALTER TABLE rules ADD COLUMN process_path_pattern TEXT")
+        self._apply_migration(cursor, "ALTER TABLE tags ADD COLUMN alert_enabled BOOLEAN DEFAULT 0")
+        self._apply_migration(cursor, "ALTER TABLE tags ADD COLUMN alert_message TEXT")
+        self._apply_migration(cursor, "ALTER TABLE tags ADD COLUMN alert_cooldown INTEGER DEFAULT 30")
+        self._apply_migration(cursor, "ALTER TABLE tags ADD COLUMN block_enabled BOOLEAN DEFAULT 0")
+        self._apply_migration(cursor, "ALTER TABLE tags ADD COLUMN block_start_time TEXT")
+        self._apply_migration(cursor, "ALTER TABLE tags ADD COLUMN block_end_time TEXT")
+        self._apply_migration(cursor, "ALTER TABLE tags ADD COLUMN category TEXT DEFAULT 'other'")
+
+    def _mark_existing_installations(self, cursor):
+        """기존 사용자 DB는 기본 시드를 다시 넣지 않도록 표시."""
         cursor.execute("SELECT value FROM settings WHERE key='default_tags_seeded'")
         if not cursor.fetchone():
             # 시스템 태그 외에 다른 태그가 있으면 기존 사용자로 간주
@@ -199,6 +174,8 @@ class DatabaseManager:
             if cursor.fetchone()[0] > 0:
                 cursor.execute("INSERT INTO settings (key, value) VALUES ('default_rules_seeded', '1')")
 
+    def _create_supporting_tables(self, cursor):
+        """부가 기능용 테이블 생성."""
         # alert_sounds 테이블 (알림음 목록)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS alert_sounds (
@@ -230,6 +207,8 @@ class DatabaseManager:
             )
         """)
 
+    def _seed_system_tags_and_rules(self, cursor):
+        """항상 필요한 시스템 태그와 잠금 룰 보장."""
         # 시스템 필수 태그 (항상 존재해야 함)
         system_tags = [
             ('자리비움', '#9E9E9E', 'other'),
@@ -252,14 +231,19 @@ class DatabaseManager:
                     VALUES ('화면 잠금', 100, '__LOCKED__,lockapp.exe,*__IDLE__*', ?)
                 """, (away_tag_id,))
 
+    def _get_resource_base_path(self) -> Path:
+        """리소스 기준 경로 반환."""
+        import sys
+        if getattr(sys, 'frozen', False):
+            return Path(sys._MEIPASS)
+        return Path(__file__).parent.parent
+
+    def _seed_default_rules(self, cursor):
+        """최초 실행 시 기본 규칙 JSON 가져오기."""
         # 기본 태그/규칙 삽입 (최초 1회만) - JSON에서 import
         cursor.execute("SELECT value FROM settings WHERE key='default_rules_seeded'")
         if not cursor.fetchone():
-            import sys
-            if getattr(sys, 'frozen', False):
-                base_path = Path(sys._MEIPASS)
-            else:
-                base_path = Path(__file__).parent.parent
+            base_path = self._get_resource_base_path()
             default_json = base_path / "resources" / "default_rules.json"
 
             if default_json.exists():
@@ -270,11 +254,6 @@ class DatabaseManager:
                     print(f"[DB] 기본 규칙 import 완료: 태그 {stats.get('tags_imported', 0)}개, 규칙 {stats.get('rules_imported', 0)}개")
 
             cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('default_rules_seeded', '1')")
-
-        self._reconcile_alert_assets()
-        self._seed_alert_assets()
-
-        self.conn.commit()
 
     def _reconcile_alert_assets(self):
         """알림 이미지/사운드 경로 정리 및 누락 항목 제거"""
@@ -324,11 +303,7 @@ class DatabaseManager:
         sound_count = cursor.fetchone()[0]
 
         # PyInstaller 빌드 환경에서는 _MEIPASS 사용
-        import sys
-        if getattr(sys, 'frozen', False):
-            base_path = Path(sys._MEIPASS)
-        else:
-            base_path = Path(__file__).parent.parent
+        base_path = self._get_resource_base_path()
         resource_dir = base_path / "resources"
 
         if image_count == 0:
